@@ -354,3 +354,13 @@ MigrationBackup/
 
 ## Rider
 .idea/*
+
+## Mac OS
+.DS_Store
+
+## Project
+bin/
+obj/
+
+## References
+References/**
