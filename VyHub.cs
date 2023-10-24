@@ -3,10 +3,12 @@
 using System;
 using System.Collections;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Oxide.Core;
 using Oxide.Core.Libraries;
 using Oxide.Core.Libraries.Covalence;
 using UnityEngine;
+using UnityEngine.Networking;
 using Time = UnityEngine.Time;
 
 #if RUST
@@ -19,7 +21,7 @@ using Oxide.Game.Rust.Cui;
 
 namespace Oxide.Plugins
 {
-	[Info("VyHub", "VyHub", "1.1.0")]
+	[Info("VyHub", "VyHub", "1.2.0")]
 	[Description(
 		"VyHub plugin to manage and monetize your Rust / 7 Days to Die server. You can create your webstore for free with VyHub!")]
 	public class VyHub : CovalencePlugin
@@ -33,6 +35,8 @@ namespace Oxide.Plugins
 		private const string CMD_EDIT_CONFIG = "vh_config";
 
 		private const string CMD_SETUP_CONFIG = "vh_setup";
+
+		private readonly List<UnityWebRequest> _activeRequests = new List<UnityWebRequest>();
 
 		#endregion
 
@@ -203,7 +207,7 @@ namespace Oxide.Plugins
 		private void Init()
 		{
 			LoadExecutedRewards();
-			
+
 			LoadCachedBans();
 		}
 
@@ -212,6 +216,10 @@ namespace Oxide.Plugins
 			RegisterCommands();
 
 			_config.API.InitOrUpdate();
+
+#if RUST
+			InitColors();
+#endif
 
 			GetServerInformation(() =>
 			{
@@ -230,12 +238,14 @@ namespace Oxide.Plugins
 		{
 			_coroutinesSendExecutedRewards.ToList().ForEach(coroutine =>
 			{
-				if (coroutine != null) ServerMgr.Instance.StopCoroutine(coroutine);
+				if (coroutine != null) Rust.Global.Runner.StopCoroutine(coroutine);
 			});
 
 #if RUST
 			UnloadDashboardUIs();
 #endif
+
+			DisposeActiveRequests();
 
 			StopFetching();
 
@@ -244,7 +254,7 @@ namespace Oxide.Plugins
 			StopAdverts();
 
 			SaveCachedBans();
-			
+
 			_config = null;
 		}
 
@@ -318,7 +328,7 @@ namespace Oxide.Plugins
 		private void OnUserBanned(string name, string id, string address, string reason)
 		{
 			_cachedBans.Add(id);
-			
+
 			FetchVyHubBans(vyHubBans =>
 			{
 				if (!vyHubBans.ContainsKey(id))
@@ -329,16 +339,16 @@ namespace Oxide.Plugins
 			});
 		}
 
-		private void OnUserUnbanned(string name, string id, string ipAddress)
+		private void OnUserUnbanned(string name, string playerID, string ipAddress)
 		{
-			_cachedBans.Remove(id);
+			_cachedBans.Remove(playerID);
 
 			FetchVyHubBans(vyHubBans =>
 			{
-				if (vyHubBans.ContainsKey(id))
+				if (vyHubBans.ContainsKey(playerID))
 				{
 					Puts("Removed banned player from VyHub");
-					UnbanVyHubUser(id);
+					UnbanVyHubUser(playerID);
 				}
 			});
 		}
@@ -432,6 +442,8 @@ namespace Oxide.Plugins
 
 			player.Reply($"You have successfully set the \"{param}\" parameter to \"{value}\"!");
 
+			_config.API.InitOrUpdate();
+
 			SaveConfig();
 
 			GetServerInformation();
@@ -479,7 +491,6 @@ namespace Oxide.Plugins
 		#region Dashboard
 
 #if RUST
-
 		#region Fields
 
 		[PluginReference] private Plugin ImageLibrary = null;
@@ -1499,14 +1510,11 @@ namespace Oxide.Plugins
 					ulong targetID;
 					if (!arg.HasArgs(2) || !ulong.TryParse(arg.Args[1], out targetID)) return;
 
-#if TESTING
-#else
 					if (player.userID == targetID)
 					{
 						player.ChatMessage($"You can't {arg.Args[0]} yourself!");
 						return;
-					}			
-#endif
+					}
 
 					var targetPlayer = covalence.Players.FindPlayerById(targetID.ToString());
 					if (targetPlayer == null) return;
@@ -1664,7 +1672,8 @@ namespace Oxide.Plugins
 
 		private void PatchServer(List<Dictionary<string, object>> userActivities)
 		{
-			SendWebRequest(_config.API.ServerEndpoint, new Dictionary<string, object>
+			WebPatchRequest(_config.API.ServerEndpoint,
+				new Dictionary<string, object>
 				{
 					["users_max"] = covalence.Server.MaxPlayers,
 					["users_current"] = covalence.Server.Players,
@@ -1673,8 +1682,7 @@ namespace Oxide.Plugins
 				},
 				"Failed to patch server: {0}",
 				"Cannot fetch serverbundle id from VyHub API! Please follow the installation instructions.",
-				new Action<ServerInfo>(serverInfo => { _serverBundleID = serverInfo.ServerBundleID; }),
-				RequestMethod.PATCH);
+				new Action<ServerInfo>(serverInfo => { _serverBundleID = serverInfo.ServerBundleID; }));
 		}
 
 		private class ServerInfo
@@ -1692,12 +1700,7 @@ namespace Oxide.Plugins
 			SendWebRequest(_config.API.FetchAdvertsEndpoint + $"&serverbundle_id={_serverBundleID}", null,
 				"Adverts could not be fetched from VyHub API: {0}",
 				"Cannot fetch adverts from VyHub API! Please follow the installation instructions.",
-				new Action<List<Advert>>(adverts =>
-				{
-					_adverts = adverts;
-
-					callback?.Invoke(adverts);
-				}));
+				callback);
 		}
 
 		private class Advert
@@ -1918,11 +1921,11 @@ namespace Oxide.Plugins
 		{
 			GetOrCreateUser(playerID, user =>
 			{
-				SendWebRequest(_config.API.UserEndpoint + $"{user.ID}/ban?serverbundle_id={_serverBundleID}",
-					null,
+				WebPatchRequest(_config.API.UserEndpoint + $"{user.ID}/ban?serverbundle_id={_serverBundleID}",
+					new Dictionary<string, object>(),
 					"Failed to unban ban: {0}",
-					"Cannot fetch Ban from VyHub API! Please follow the installation instructions.",
-					callback, RequestMethod.PATCH);
+					"Cannot fetch ban from VyHub API! Please follow the installation instructions.",
+					callback);
 			});
 		}
 
@@ -2104,16 +2107,19 @@ namespace Oxide.Plugins
 
 		private void FetchRewards(VyHubUser[] onlinePlayers)
 		{
+#if TESTING
+			SayDebug("[FetchRewards] init");
+#endif
+
 			var users = string.Join("&", onlinePlayers.Select(player => $"user_id={player.ID}"));
 			if (string.IsNullOrEmpty(users)) return;
 
-			GetRewards(users, RunDirectRewards);
-		}
+#if TESTING
+			SayDebug($"[FetchRewards] users={users}");
+#endif
 
-		private void GetRewards(string userIDs, Action<Dictionary<string, List<AppliedReward>>> callback = null)
-		{
 			SendWebRequest(
-				_config.API.UserRewardsEndpoint + $"&serverbundle_id={_serverBundleID}&user_ids={userIDs}",
+				_config.API.UserRewardsEndpoint + $"&serverbundle_id={_serverBundleID}&user_ids={users}",
 				null,
 				"Failed to get rewards from API: {0}",
 				"Cannot fetch rewards from VyHub API! Please follow the installation instructions.",
@@ -2121,7 +2127,7 @@ namespace Oxide.Plugins
 				{
 					_rewards = rewards;
 
-					callback?.Invoke(rewards);
+					RunDirectRewards(rewards);
 				}));
 		}
 
@@ -2136,16 +2142,11 @@ namespace Oxide.Plugins
 
 		private void SendExecutedReward(string rewardID, Action<AppliedReward> callback = null)
 		{
-			SendWebRequest(_config.API.SendRewardsEndpoint + rewardID,
-				new Dictionary<string, object>
-				{
-					["executed_on"] = new List<string>
-					{
-						_config.API.ServerID
-					}
-				}, "Failed to send executed rewards to API: {0}",
+			WebPatchRequest(_config.API.SendRewardsEndpoint + rewardID,
+				new Dictionary<string, object>(),
+				"Failed to send executed rewards to API: {0}",
 				"Cannot fetch executed reward from VyHub API! Please follow the installation instructions.",
-				callback, RequestMethod.PATCH);
+				callback);
 		}
 
 		private class AppliedReward
@@ -2288,7 +2289,11 @@ namespace Oxide.Plugins
 		private void SendWebRequest(string endpoint, Dictionary<string, object> body, Action<int, string> callback,
 			RequestMethod method = RequestMethod.GET)
 		{
-			webrequest.Enqueue(endpoint, body != null ? JsonConvert.SerializeObject(body) : null, callback, this,
+			webrequest.Enqueue(endpoint, body != null ? JsonConvert.SerializeObject(body) : null, (code,
+					result) =>
+				{
+					callback?.Invoke(code, result);
+				}, this,
 				method, _config.API.Headers);
 		}
 
@@ -2312,6 +2317,65 @@ namespace Oxide.Plugins
 				PrintError(errorMsg);
 
 			return obj;
+		}
+
+		private void WebPatchRequest<T>(string url,
+			Dictionary<string, object> body,
+			string errOnResponse,
+			string errOnValue,
+			Action<T> callback = null)
+		{
+			Rust.Global.Runner.StartCoroutine(WebPatchRequestAsync(url,
+				body,
+				_config.API.Headers,
+				err => PrintError(errOnResponse, err),
+				result =>
+				{
+					var val = GetValueFrom<T>(result, errOnValue);
+					if (val != null)
+						callback?.Invoke(val);
+				}));
+		}
+
+		private IEnumerator WebPatchRequestAsync(string url,
+			Dictionary<string, object> requestBody,
+			Dictionary<string, string> headers,
+			Action<string> onDeleteRequestError,
+			Action<string> onDeleteRequestSuccess)
+		{
+			var webRequest = UnityWebRequest.Put(url, JsonConvert.SerializeObject(requestBody));
+			webRequest.method = "PATCH";
+
+			_activeRequests.Add(webRequest);
+
+			foreach (var check in headers)
+				webRequest.SetRequestHeader(check.Key, check.Value);
+
+			yield return webRequest.SendWebRequest();
+
+			if (webRequest.isNetworkError || webRequest.isHttpError)
+			{
+				onDeleteRequestError?.Invoke(webRequest.error);
+			}
+			else
+			{
+				if (webRequest.isDone) onDeleteRequestSuccess?.Invoke(webRequest.downloadHandler.text);
+			}
+
+			_activeRequests.Remove(webRequest);
+		}
+
+		private void DisposeActiveRequests()
+		{
+			foreach (var www in _activeRequests)
+				try
+				{
+					www.Dispose();
+				}
+				catch
+				{
+					// ignored
+				}
 		}
 
 		#endregion
@@ -2346,14 +2410,14 @@ namespace Oxide.Plugins
 		#region Fetching
 
 		private bool _enabledFetching;
-
+		
 		private Coroutine _coroutineFetching;
-
+		
 		private void InitFetching()
 		{
 			_enabledFetching = true;
 
-			_coroutineFetching = ServerMgr.Instance.StartCoroutine(HandleFetching());
+			_coroutineFetching = Rust.Global.Runner.StartCoroutine(HandleFetching());
 		}
 
 		private void StopFetching()
@@ -2361,7 +2425,7 @@ namespace Oxide.Plugins
 			_enabledFetching = false;
 
 			if (_coroutineFetching != null)
-				ServerMgr.Instance.StopCoroutine(_coroutineFetching);
+				Rust.Global.Runner.StopCoroutine(_coroutineFetching);
 		}
 
 		private IEnumerator HandleFetching()
@@ -2372,7 +2436,7 @@ namespace Oxide.Plugins
 
 				FetchRewards(onlinePlayers);
 
-				FetchVyHubBans(bans => { SyncBans(); });
+				FetchVyHubBans(bans => SyncBans());
 
 				FetchGroups(groups =>
 				{
@@ -2381,13 +2445,13 @@ namespace Oxide.Plugins
 					SyncGroupsForAll(onlinePlayers);
 				});
 
-				FetchAdverts();
+				FetchAdverts(averts => _adverts = averts);
 
 				PatchServer(onlinePlayers);
 
 				SendPlayerTime();
 
-				yield return CoroutineEx.waitForSeconds(3600);
+				yield return CoroutineEx.waitForSeconds(60);
 			}
 		}
 
@@ -2575,7 +2639,7 @@ namespace Oxide.Plugins
 					// Unbanned on Game Server
 					Puts($"Unbanning VyHub ban for player {playerID}. (Unbanned on game server)");
 
-					UnBanVyHub(playerID, ban => _cachedBans.Remove(playerID));
+					UnbanVyHubUser(playerID, result => _cachedBans.Remove(playerID));
 				}
 				else
 				{
@@ -2595,7 +2659,7 @@ namespace Oxide.Plugins
 		{
 			Interface.Oxide.DataFileSystem.WriteObject($"{Name}/CachedBans", _cachedBans);
 		}
-		
+
 		private void LoadCachedBans()
 		{
 			try
@@ -2609,7 +2673,7 @@ namespace Oxide.Plugins
 
 			if (_cachedBans == null) _cachedBans = new HashSet<string>();
 		}
-		
+
 		private List<string> GetServerBans()
 		{
 			var list = new List<string>();
@@ -2647,7 +2711,7 @@ namespace Oxide.Plugins
 		{
 			var player = covalence.Players.FindPlayerById(playerID);
 			if (player == null) return;
-			
+
 			GetOrCreateUser(playerID, user =>
 			{
 				var serverUser = ServerUsers.Get(Convert.ToUInt64(playerID));
@@ -2656,11 +2720,6 @@ namespace Oxide.Plugins
 				CreateVyHubBanWithoutCreator((long) Mathf.Max(serverUser.expiry, 0), serverUser.notes, playerID,
 					DateTime.UtcNow, callback);
 			});
-		}
-
-		private void UnBanVyHub(string playerID, Action<BanData> callback = null)
-		{
-			GetOrCreateUser(playerID, user => { UnbanVyHubUser(playerID, callback); });
 		}
 
 		#endregion
@@ -2718,6 +2777,15 @@ namespace Oxide.Plugins
 					permission.AddUserGroup(playerID, group);
 
 					_groupsBackLog.Add(GetGroupBacklogKey(playerID, group, GroupOperation.add));
+				}
+
+			foreach (var group in permission.GetUserGroups(playerID))
+				if (!groups.Contains(group) && _vyHubGroups.ContainsKey(group))
+				{
+#if TESTING
+					SayDebug($"[AddPlayerToGameGroup] group to remove: {group}");
+#endif
+					permission.RemoveUserGroup(playerID, group);
 				}
 		}
 
@@ -2777,7 +2845,6 @@ namespace Oxide.Plugins
 				if (player == null) continue;
 
 				var appliedRewards = check.Value;
-
 				foreach (var appliedReward in appliedRewards)
 				{
 					if (_executedRewards.Contains(appliedReward.ID) ||
@@ -2840,7 +2907,7 @@ namespace Oxide.Plugins
 
 		private void SendExecutedRewards()
 		{
-			_coroutinesSendExecutedRewards.Add(ServerMgr.Instance.StartCoroutine(AsyncExecutedRewards()));
+			_coroutinesSendExecutedRewards.Add(Rust.Global.Runner.StartCoroutine(AsyncExecutedRewards()));
 		}
 
 		private IEnumerator AsyncExecutedRewards()
@@ -2910,11 +2977,22 @@ namespace Oxide.Plugins
 		private void Log(LogType type, string message)
 		{
 #if TESTING
-				Puts($"[Log.{type}] {message}");
+			Puts($"[Log.{type}] {message}");
 #endif
 
 			LogToFile($"{type}", $"[{DateTime.Now:hh:mm:ss}] {message}", this);
 		}
+
+		#endregion
+
+		#region Testing Functions
+
+#if TESTING
+		private static void SayDebug(string message)
+		{
+			Debug.Log($"[TESTING] {message}");
+		}
+#endif
 
 		#endregion
 	}
