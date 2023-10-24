@@ -21,7 +21,7 @@ using Oxide.Game.Rust.Cui;
 
 namespace Oxide.Plugins
 {
-	[Info("VyHub", "VyHub", "1.2.0")]
+	[Info("VyHub", "VyHub", "1.3.0")]
 	[Description(
 		"VyHub plugin to manage and monetize your Rust / 7 Days to Die server. You can create your webstore for free with VyHub!")]
 	public class VyHub : CovalencePlugin
@@ -32,12 +32,15 @@ namespace Oxide.Plugins
 
 		private const string GameType = "STEAM";
 
-		private const string CMD_EDIT_CONFIG = "vh_config";
-
-		private const string CMD_SETUP_CONFIG = "vh_setup";
+		private const string
+			CMD_EDIT_CONFIG = "vh_config",
+			CMD_SETUP_CONFIG = "vh_setup",
+			CMD_WARN = "warn";
 
 		private readonly List<UnityWebRequest> _activeRequests = new List<UnityWebRequest>();
 
+		private List<string> _warnedUsers = new List<string>();
+		
 		#endregion
 
 		#region Config
@@ -46,14 +49,14 @@ namespace Oxide.Plugins
 
 		private class Configuration
 		{
-			[JsonProperty(PropertyName = "Advert Settings")]
+			[JsonProperty("Advert Settings")]
 			public AdvertSettings AdvertSettings = new AdvertSettings
 			{
 				Prefix = "[★] ",
 				Interval = 180f
 			};
 
-			[JsonProperty(PropertyName = "API Settings")]
+			[JsonProperty("API Settings")]
 			public APISettings API = new APISettings
 			{
 				URL = "https://api.vyhub.app/<name>/v1",
@@ -64,20 +67,20 @@ namespace Oxide.Plugins
 
 		private class AdvertSettings
 		{
-			[JsonProperty(PropertyName = "Prefix")]
+			[JsonProperty("Prefix")]
 			public string Prefix;
 
-			[JsonProperty(PropertyName = "Interval")]
+			[JsonProperty("Interval")]
 			public float Interval;
 		}
 
 		private class APISettings
 		{
-			[JsonProperty(PropertyName = "URL")] public string URL;
+			[JsonProperty("URL")] public string URL;
 
-			[JsonProperty(PropertyName = "Key")] public string Key;
+			[JsonProperty("Key")] public string Key;
 
-			[JsonProperty(PropertyName = "Server ID")]
+			[JsonProperty("Server ID")]
 			public string ServerID;
 
 			[JsonIgnore] public Dictionary<string, string> Headers;
@@ -87,6 +90,8 @@ namespace Oxide.Plugins
 			[JsonIgnore] public string FetchAdvertsEndpoint;
 
 			[JsonIgnore] public string UserEndpoint;
+			
+			[JsonIgnore] public string UserActivityEndpoint;
 
 			[JsonIgnore] public string PlaytimeDefinitionEndpoint;
 
@@ -95,6 +100,8 @@ namespace Oxide.Plugins
 			[JsonIgnore] public string ServerBundleEndpoint;
 
 			[JsonIgnore] public string BansEndpoint;
+
+			[JsonIgnore] public string WarningsEndpoint;
 
 			[JsonIgnore] public string GroupEndpoint;
 
@@ -114,10 +121,12 @@ namespace Oxide.Plugins
 				ServerEndpoint = $"{URL}/server/{ServerID}";
 				FetchAdvertsEndpoint = $"{URL}/advert/?active=true";
 				UserEndpoint = $"{URL}/user/";
+				UserActivityEndpoint = $"{URL}/server/{ServerID}/user-activity";
 				PlaytimeDefinitionEndpoint = $"{URL}/user/attribute/definition";
 				PlaytimeEndpoint = $"{URL}/user/attribute";
 				ServerBundleEndpoint = $"{URL}/server/bundle/";
 				BansEndpoint = $"{URL}/ban/";
+				WarningsEndpoint = $"{URL}/warning/";
 				GroupEndpoint = $"{URL}/group/";
 				UserRewardsEndpoint =
 					$"{URL}/packet/reward/applied/user?active=true&foreign_ids=true&status=OPEN&for_server_id={ServerID}";
@@ -392,11 +401,10 @@ namespace Oxide.Plugins
 
 		#region Commands
 
-		private readonly string MSG_EDIT_CONFIG_ERR_SYNTAX =
-			$"Error syntax! Use: /{CMD_EDIT_CONFIG} <api_key/api_url/server_id> <value>";
-
-		private readonly string MSG_SETUP_CONFIG_ERR_SYNTAX =
-			$"Error syntax! Use: /{CMD_EDIT_CONFIG} <api_key> <api_url> <server_id>";
+		private readonly string
+			MSG_EDIT_CONFIG_ERR_SYNTAX = $"Error syntax! Use: /{CMD_EDIT_CONFIG} <api_key/api_url/server_id> <value>",
+			MSG_SETUP_CONFIG_ERR_SYNTAX = $"Error syntax! Use: /{CMD_EDIT_CONFIG} <api_key> <api_url> <server_id>",
+			MSG_WARN_ERR_SYNTAX = $"Error syntax! Use: /{CMD_WARN} <steam id> <reason>";
 
 		private void CmdEditConfig(IPlayer player, string command, string[] args)
 		{
@@ -486,11 +494,32 @@ namespace Oxide.Plugins
 			GetServerInformation();
 		}
 
+		private void CmdWarn(IPlayer player, string command, string[] args)
+		{
+			if (!player.IsServer) return;
+
+			if (args.Length < 2)
+			{
+				player.Reply(MSG_WARN_ERR_SYNTAX);
+				return;
+			}
+
+			var targetPlayer = covalence.Players.FindPlayerById(args[0]);
+			if (targetPlayer == null || !targetPlayer.IsConnected)
+			{
+				player.Reply("The player must be online!");
+				return;
+			}
+
+			CreateWarning(player, targetPlayer, args[1]);
+		}
+
 		#endregion
 
 		#region Dashboard
 
 #if RUST
+
 		#region Fields
 
 		[PluginReference] private Plugin ImageLibrary = null;
@@ -508,40 +537,40 @@ namespace Oxide.Plugins
 
 			public string Duration = string.Empty;
 		}
-		
-		private const string DashboardLayer = "UI.VyHub.Dashboard";
-		private const string DashboardMainLayer = "UI.VyHub.Dashboard.Main";
-		private const string DashboardConfirmLayer = "UI.VyHub.Dashboard.Confirm";
-		private const string DashboardConfirmMainLayer = "UI.VyHub.Dashboard.Confirm.Main";
-		private const string DashboardOpenCmd = "dashboard";
-		private const string DashboardConsoleCmd = "UI_VyHub_Dashboard";
 
-		private const float DASHBOARD_HEADER_BTN_WIDTH = 25;
-		private const float DASHBOARD_TAB_HEIGHT = 36;
-		private const float DASHBOARD_TAB_MARGIN = 0;
+		private const string 
+			DashboardLayer = "UI.VyHub.Dashboard",
+			DashboardMainLayer = "UI.VyHub.Dashboard.Main",
+			DashboardConfirmLayer = "UI.VyHub.Dashboard.Confirm",
+			DashboardConfirmMainLayer = "UI.VyHub.Dashboard.Confirm.Main", 
+			DashboardOpenCmd = "dashboard",
+			DashboardConsoleCmd = "UI_VyHub_Dashboard",
+			DASHBOARD_ACTION_BAN = "ban",
+			DASHBOARD_ACTION_WARN = "warn",
+			DASHBOARD_ACTION_UNBAN = "unban";
 
-		private const int DASHBOARD_TABLE_PLAYERS_CONST_X_INDENT = 205;
-		private const int DASHBOARD_TABLE_PLAYERS_ON_LINE = 2;
-		private const int DASHBOARD_TABLE_PLAYERS_MAX_LINES = 8;
-
-		private const int DASHBOARD_TABLE_PLAYERS_TOTAL_AMOUNT =
+		private const int 
+			DASHBOARD_TABLE_PLAYERS_CONST_X_INDENT = 205,
+			DASHBOARD_TABLE_PLAYERS_ON_LINE = 2,
+			DASHBOARD_TABLE_PLAYERS_MAX_LINES = 8,
+			DASHBOARD_TABLE_PLAYERS_TOTAL_AMOUNT =
 			DASHBOARD_TABLE_PLAYERS_ON_LINE * DASHBOARD_TABLE_PLAYERS_MAX_LINES;
 
-		private const float DASHBOARD_TABLE_PLAYERS_WIDTH = 292f;
-		private const float DASHBOARD_TABLE_PLAYERS_AVATAR_SIZE = 36f;
-		private const float DASHBOARD_TABLE_PLAYERS_HEIGHT = 36f;
-		private const float DASHBOARD_TABLE_PLAYERS_X_MARGIN = 16f;
-		private const float DASHBOARD_TABLE_PLAYERS_Y_MARGIN = 8f;
-		private const float DASHBOARD_TABLE_PLAYERS_BTN_WIDTH = 60f;
-		private const float DASHBOARD_TABLE_PLAYERS_BTN_HEIGHT = 20f;
-		private const float DASHBOARD_TABLE_PLAYERS_BTN_MARGIN = 5f;
-		
-		private const float DASHBOARD_CONFIRM_HEIGHT = 230f;
-		private const float DASHBOARD_CONFIRM_BANS_HEIGHT = 285f;
+		private const float 
+			DASHBOARD_HEADER_BTN_WIDTH = 25,
+			DASHBOARD_TAB_HEIGHT = 36,
+			DASHBOARD_TAB_MARGIN = 0,
+			DASHBOARD_TABLE_PLAYERS_WIDTH = 292f,
+			DASHBOARD_TABLE_PLAYERS_AVATAR_SIZE = 36f,
+			DASHBOARD_TABLE_PLAYERS_HEIGHT = 36f,
+			DASHBOARD_TABLE_PLAYERS_X_MARGIN = 16f,
+			DASHBOARD_TABLE_PLAYERS_Y_MARGIN = 8f,
+			DASHBOARD_TABLE_PLAYERS_BTN_WIDTH = 65f,
+			DASHBOARD_TABLE_PLAYERS_BTN_HEIGHT = 20f,
+			DASHBOARD_TABLE_PLAYERS_BTN_MARGIN = 5f,
+			DASHBOARD_CONFIRM_HEIGHT = 230f,
+			DASHBOARD_CONFIRM_BANS_HEIGHT = 285f;
 
-		private const string DASHBOARD_ACTION_BAN = "ban";
-		private const string DASHBOARD_ACTION_KICK = "kick";
-		
 		#endregion
 
 		#region Colors
@@ -555,7 +584,8 @@ namespace Oxide.Plugins
 		private string _color7;
 		private string _color8;
 		private string _color9;
-		
+		private string _color10;
+
 		private void InitColors()
 		{
 			_color1 = HexToCuiColor("#0E0E10");
@@ -567,6 +597,7 @@ namespace Oxide.Plugins
 			_color7 = HexToCuiColor("#000000");
 			_color8 = HexToCuiColor("#FFFFFF", 50);
 			_color9 = HexToCuiColor("#FF4B4B");
+			_color10 = HexToCuiColor("#B19F56");
 		}
 
 		private static string HexToCuiColor(string HEX, float Alpha = 100)
@@ -583,7 +614,7 @@ namespace Oxide.Plugins
 		}
 
 		#endregion
-		
+
 		#region Interface
 
 		private void DashboardUI(BasePlayer player, DashboardTab selectedTab = DashboardTab.Players, int page = 0,
@@ -967,6 +998,8 @@ namespace Oxide.Plugins
 					for (var index = 0; index < members.Length; index++)
 					{
 						var member = members[index];
+						var isWarned = _warnedUsers.Contains(member.UserIDString);
+						var isBanned = member.IPlayer?.IsBanned == true;
 
 						#region Background
 
@@ -1063,7 +1096,7 @@ namespace Oxide.Plugins
 								},
 								Text =
 								{
-									Text = "Ban",
+									Text = isBanned ? "Unban" : "Ban",
 									Align = TextAnchor.MiddleCenter,
 									Font = "robotocondensed-regular.ttf",
 									FontSize = 10,
@@ -1071,7 +1104,10 @@ namespace Oxide.Plugins
 								},
 								Button =
 								{
-									Command = $"{DashboardConsoleCmd} {DASHBOARD_ACTION_BAN} {member.UserIDString}",
+									Command = 
+										isBanned ?
+										$"{DashboardConsoleCmd} {DASHBOARD_ACTION_UNBAN} {member.UserIDString}"
+										: $"{DashboardConsoleCmd} {DASHBOARD_ACTION_BAN} {member.UserIDString}",
 									Color = _color9
 								}
 							}, DashboardMainLayer + $".Content.Player.{index}");
@@ -1090,7 +1126,7 @@ namespace Oxide.Plugins
 								},
 								Text =
 								{
-									Text = "Kick",
+									Text = isWarned ? "Has warning" : "Warn",
 									Align = TextAnchor.MiddleCenter,
 									Font = "robotocondensed-regular.ttf",
 									FontSize = 10,
@@ -1098,8 +1134,11 @@ namespace Oxide.Plugins
 								},
 								Button =
 								{
-									Command = $"{DashboardConsoleCmd} {DASHBOARD_ACTION_KICK} {member.UserIDString}",
-									Color = _color4
+									Command = 
+										isWarned 
+											? ""
+										: $"{DashboardConsoleCmd} {DASHBOARD_ACTION_WARN} {member.UserIDString}",
+									Color = isWarned ? _color10 : _color4
 								}
 							}, DashboardMainLayer + $".Content.Player.{index}");
 
@@ -1170,7 +1209,7 @@ namespace Oxide.Plugins
 			#region Main
 
 			var mainHeight = action == DASHBOARD_ACTION_BAN ? DASHBOARD_CONFIRM_BANS_HEIGHT : DASHBOARD_CONFIRM_HEIGHT;
-			
+
 			container.Add(new CuiPanel()
 			{
 				RectTransform =
@@ -1281,25 +1320,28 @@ namespace Oxide.Plugins
 
 			#endregion
 
-			#region Reason
-
-			ySwitch = ySwitch - height - 5f;
-
-			EnterFieldUI(ref container, ref ySwitch, ref height, confirm, "reason");
-
-			#endregion
-
-			#region Duration
-
-			if (action == DASHBOARD_ACTION_BAN)
+			if (action != DASHBOARD_ACTION_UNBAN)
 			{
+				#region Reason
+
 				ySwitch = ySwitch - height - 5f;
 
-				EnterFieldUI(ref container, ref ySwitch, ref height, confirm, "duration");
+				EnterFieldUI(ref container, ref ySwitch, ref height, confirm, "reason");
+
+				#endregion
+
+				#region Duration
+
+				if (action == DASHBOARD_ACTION_BAN)
+				{
+					ySwitch = ySwitch - height - 5f;
+
+					EnterFieldUI(ref container, ref ySwitch, ref height, confirm, "duration");
+				}
+
+				#endregion
 			}
-
-			#endregion
-
+			
 			#region Buttons
 
 			ySwitch = ySwitch - height - 10f;
@@ -1505,7 +1547,25 @@ namespace Oxide.Plugins
 				}
 
 				case DASHBOARD_ACTION_BAN:
-				case DASHBOARD_ACTION_KICK:
+				case DASHBOARD_ACTION_WARN:
+				{
+					ulong targetID;
+					if (!arg.HasArgs(2) || !ulong.TryParse(arg.Args[1], out targetID)) return;
+
+					if (player.userID == targetID)
+					{
+						player.ChatMessage($"You can't {arg.Args[0]} yourself!");
+						return;
+					}
+
+					var targetPlayer = covalence.Players.FindPlayerById(targetID.ToString());
+					if (targetPlayer == null) return;
+
+					ConfirmActionUI(player, arg.Args[0], targetPlayer.Name, targetID);
+					break;
+				}
+
+				case DASHBOARD_ACTION_UNBAN:
 				{
 					ulong targetID;
 					if (!arg.HasArgs(2) || !ulong.TryParse(arg.Args[1], out targetID)) return;
@@ -1531,12 +1591,12 @@ namespace Oxide.Plugins
 					switch (action)
 					{
 						case DASHBOARD_ACTION_BAN:
-						case DASHBOARD_ACTION_KICK:
+						case DASHBOARD_ACTION_WARN:
 						{
 							if (!arg.HasArgs(3)) return;
 
 							var targetID = arg.Args[2];
-							if (string.IsNullOrWhiteSpace(targetID) || !targetID.IsSteamId()) 
+							if (string.IsNullOrWhiteSpace(targetID) || !targetID.IsSteamId())
 								return;
 
 							ConfirmData confirmData;
@@ -1558,9 +1618,36 @@ namespace Oxide.Plugins
 									NextTick(() => server.Ban(targetID, confirmData.Reason, duration));
 									break;
 								}
-								case DASHBOARD_ACTION_KICK:
+								case DASHBOARD_ACTION_WARN:
 								{
-									NextTick(() => covalence.Players.FindPlayerById(targetID)?.Kick(confirmData.Reason));
+									NextTick(() => CreateWarning(player.IPlayer, covalence.Players.FindPlayerById(targetID), confirmData.Reason));
+									break;
+								}
+							}
+
+							_confirmPlayers.Remove(player.userID);
+
+							DashboardUI(player);
+							break;
+						}
+
+						case DASHBOARD_ACTION_UNBAN:
+						{
+							if (!arg.HasArgs(3)) return;
+
+							var targetID = arg.Args[2];
+							if (string.IsNullOrWhiteSpace(targetID) || !targetID.IsSteamId())
+								return;
+
+							ConfirmData confirmData;
+							if (!_confirmPlayers.TryGetValue(player.userID, out confirmData))
+								return;
+
+							switch (action)
+							{
+								case DASHBOARD_ACTION_UNBAN:
+								{
+									NextTick(() => server.Unban(targetID));
 									break;
 								}
 							}
@@ -1687,7 +1774,7 @@ namespace Oxide.Plugins
 
 		private class ServerInfo
 		{
-			[JsonProperty(PropertyName = "serverbundle_id")]
+			[JsonProperty("serverbundle_id")]
 			public string ServerBundleID;
 		}
 
@@ -1705,14 +1792,14 @@ namespace Oxide.Plugins
 
 		private class Advert
 		{
-			[JsonProperty(PropertyName = "id")] public string ID;
+			[JsonProperty("id")] public string ID;
 
-			[JsonProperty(PropertyName = "title")] public string Title;
+			[JsonProperty("title")] public string Title;
 
-			[JsonProperty(PropertyName = "content")]
+			[JsonProperty("content")]
 			public string Content;
 
-			[JsonProperty(PropertyName = "color")] public string Color;
+			[JsonProperty("color")] public string Color;
 		}
 
 		#endregion
@@ -1795,6 +1882,81 @@ namespace Oxide.Plugins
 			[JsonProperty("linked_users")] public List<VyHubUser> LinkedUsers;
 		}
 
+		private void FetchWarnedUsers()
+		{
+			SendWebRequest(_config.API.UserActivityEndpoint, null,
+				"Failed to fetch user activity in VyHub API: {0}",
+				"Cannot fetch VyHubUser from VyHub API! Please follow the installation instructions.",
+				new Action<List<UserActivity>>(users =>
+				{
+					_warnedUsers.Clear();
+					
+					users
+						.FindAll(user => user.Warnings.Count > 0 && user.Warnings.Exists(warn => warn.Active))
+						.ForEach(user => _warnedUsers.Add(user.Identifier));
+				}));
+		}
+
+		private class UserActivity
+		{
+			[JsonProperty("id")]
+			public string ID;
+			
+			[JsonProperty("type")]
+			public string Type;
+			
+			[JsonProperty("identifier")]
+			public string Identifier;
+			
+			[JsonProperty("username")]
+			public string Username;
+			
+			[JsonProperty("avatar")]
+			public string Avatar;
+			
+			[JsonProperty("warnings")]
+			public List<Warning> Warnings;
+
+			public class Warning
+			{
+				[JsonProperty("id")]
+				public string ID;
+				
+				[JsonProperty("reason")]
+				public string Reason;
+				
+				[JsonProperty("creator")]
+				public Creator Creator;
+				
+				[JsonProperty("created_on")]
+				public DateTime CreatedOn;
+				
+				[JsonProperty("active")]
+				public bool Active;
+				
+				[JsonProperty("disabled")]
+				public bool Disabled;
+			}
+			
+			public class Creator
+			{
+				[JsonProperty("id")]
+				public string ID;
+				
+				[JsonProperty("username")]
+				public string Username;
+				
+				[JsonProperty("type")]
+				public string Type;
+				
+				[JsonProperty("identifier")]
+				public string Identifier;
+				
+				[JsonProperty("avatar")]
+				public string Avatar;
+			}
+		}
+		
 		#endregion
 
 		#region Playtime
@@ -1874,7 +2036,7 @@ namespace Oxide.Plugins
 
 		private class PlaytimeDefinition
 		{
-			[JsonProperty(PropertyName = "id")] public string ID;
+			[JsonProperty("id")] public string ID;
 		}
 
 		#endregion
@@ -1980,6 +2142,91 @@ namespace Oxide.Plugins
 
 		#endregion
 
+		#region Warnings
+
+		private void CreateWarning(IPlayer initiator,
+			IPlayer targetPlayer,
+			string reason)
+		{
+			if (initiator == null || targetPlayer == null)
+				return;
+
+			if (!initiator.IsServer && initiator.IsConnected)
+				GetOrCreateUser(initiator.Id,
+					admin => CreateVyHubWarning(targetPlayer.Id, admin.ID, reason,
+						(code, response) => OnWarningResponse(initiator, targetPlayer, reason, code, response)));
+			else
+				CreateVyHubWarningWithoutCreator(targetPlayer.Id, reason,
+					(code, response) => OnWarningResponse(initiator, targetPlayer, reason, code, response));
+		}
+		
+		private void CreateVyHubWarning(string playerID, string adminID, string reason,
+			Action<int, string> callback = null)
+		{
+			GetOrCreateUser(playerID, user =>
+			{
+				SendWebRequest(_config.API.WarningsEndpoint + $"morph_user_id={adminID}",
+					new Dictionary<string, object>
+					{
+						["reason"] = reason,
+						["serverbundle_id"] = _serverBundleID,
+						["user_id"] = user.ID
+					},
+					callback, RequestMethod.POST);
+			});
+		}
+
+		private void CreateVyHubWarningWithoutCreator(string playerID, string reason,
+			Action<int, string> callback = null)
+		{
+			GetOrCreateUser(playerID, user =>
+			{
+				SendWebRequest(_config.API.WarningsEndpoint,
+					new Dictionary<string, object>
+					{
+						["reason"] = reason,
+						["serverbundle_id"] = _serverBundleID,
+						["user_id"] = user.ID
+					},
+					callback, RequestMethod.POST);
+			});
+		}
+
+		private void OnWarningResponse(IPlayer initiator, IPlayer targetPlayer, string reason, int code, string response)
+		{
+			if (code != 200)
+			{
+				if (code == 403)
+				{
+					initiator.Reply(
+						"Insufficient permissions to perform this action. Please contact your administrator for assistance.");
+					return;
+				}
+
+				initiator.Reply("Unsuccessful warning. Error message: " + response);
+				return;
+			}
+
+			targetPlayer.Reply($"You have received a warning: {reason}");
+			targetPlayer.Reply("A warning notice has been sent to you.");
+
+			Log(LogType.INFO, $"[WARN] Warned user {targetPlayer.Name}: {reason}");
+
+			initiator.Reply($"Warning successfully issued to \"{targetPlayer.Name}\". Reason: \"{reason}\"");
+
+			FetchVyHubBans(bans => SyncBans());
+		}
+		
+		private class Warn
+		{
+			[JsonProperty("reason")]
+			public string Reason;
+
+			[JsonProperty("id")] public string ID;
+		}
+
+		#endregion
+
 		#region Groups
 
 		private void FetchGroups(Action<List<VyHubGroup>> callback = null)
@@ -2055,50 +2302,50 @@ namespace Oxide.Plugins
 
 		private class VyHubGroup
 		{
-			[JsonProperty(PropertyName = "id")] public string ID;
-			[JsonProperty(PropertyName = "name")] public string Name;
+			[JsonProperty("id")] public string ID;
+			[JsonProperty("name")] public string Name;
 
-			[JsonProperty(PropertyName = "permission_level")]
+			[JsonProperty("permission_level")]
 			public int PermissionLevel;
 
-			[JsonProperty(PropertyName = "color")] public string Color;
+			[JsonProperty("color")] public string Color;
 
-			[JsonProperty(PropertyName = "properties", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+			[JsonProperty("properties", ObjectCreationHandling = ObjectCreationHandling.Replace)]
 			public Dictionary<string, GroupProperty> Properties;
 
-			[JsonProperty(PropertyName = "is_team")]
+			[JsonProperty("is_team")]
 			public bool IsTeam;
 
-			[JsonProperty(PropertyName = "mappings", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+			[JsonProperty("mappings", ObjectCreationHandling = ObjectCreationHandling.Replace)]
 			public List<GroupMapping> Mappings;
 		}
 
 		private class GroupProperty
 		{
-			[JsonProperty(PropertyName = "name")] public string Name;
+			[JsonProperty("name")] public string Name;
 
-			[JsonProperty(PropertyName = "granted")]
+			[JsonProperty("granted")]
 			public bool Granted;
 
-			[JsonProperty(PropertyName = "value")] public string Value;
+			[JsonProperty("value")] public string Value;
 		}
 
 		private class GroupMapping
 		{
-			[JsonProperty(PropertyName = "name")] public string Name;
+			[JsonProperty("name")] public string Name;
 
-			[JsonProperty(PropertyName = "serverbundle_id")]
+			[JsonProperty("serverbundle_id")]
 			public string ServerBundleID;
 
-			[JsonProperty(PropertyName = "id")] public string ID;
+			[JsonProperty("id")] public string ID;
 
-			[JsonProperty(PropertyName = "group_id")]
+			[JsonProperty("group_id")]
 			public string GroupID;
 		}
 
 		private class Membership
 		{
-			[JsonProperty(PropertyName = "id")] public string ID;
+			[JsonProperty("id")] public string ID;
 		}
 
 		#endregion
@@ -2151,105 +2398,105 @@ namespace Oxide.Plugins
 
 		private class AppliedReward
 		{
-			[JsonProperty(PropertyName = "id")] public string ID;
+			[JsonProperty("id")] public string ID;
 
-			[JsonProperty(PropertyName = "active")]
+			[JsonProperty("active")]
 			public string Active;
 
-			[JsonProperty(PropertyName = "reward")]
+			[JsonProperty("reward")]
 			public Reward Reward;
 
-			[JsonProperty(PropertyName = "user")] public User User;
+			[JsonProperty("user")] public User User;
 
-			[JsonProperty(PropertyName = "applied_packet_id")]
+			[JsonProperty("applied_packet_id")]
 			public string AppliedPacketID;
 
-			[JsonProperty(PropertyName = "applied_packet")]
+			[JsonProperty("applied_packet")]
 			public AppliedPacket AppliedPacket;
 
-			[JsonProperty(PropertyName = "status")]
+			[JsonProperty("status")]
 			public string Status;
 
-			[JsonProperty(PropertyName = "executed_on", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+			[JsonProperty("executed_on", ObjectCreationHandling = ObjectCreationHandling.Replace)]
 			public List<string> ExecutedOn;
 		}
 
 		private class Reward
 		{
-			[JsonProperty(PropertyName = "name")] public string Name;
-			[JsonProperty(PropertyName = "type")] public string Type;
+			[JsonProperty("name")] public string Name;
+			[JsonProperty("type")] public string Type;
 
-			[JsonProperty(PropertyName = "data", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+			[JsonProperty("data", ObjectCreationHandling = ObjectCreationHandling.Replace)]
 			public Dictionary<string, string> Data;
 
-			[JsonProperty(PropertyName = "order")] public int Order;
-			[JsonProperty(PropertyName = "once")] public bool Once;
+			[JsonProperty("order")] public int Order;
+			[JsonProperty("once")] public bool Once;
 
-			[JsonProperty(PropertyName = "once_from_all")]
+			[JsonProperty("once_from_all")]
 			public bool OnceFromAll;
 
-			[JsonProperty(PropertyName = "on_event")]
+			[JsonProperty("on_event")]
 			public string OnEvent;
 
-			[JsonProperty(PropertyName = "id")] public string ID;
+			[JsonProperty("id")] public string ID;
 
-			[JsonProperty(PropertyName = "serverbundle", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+			[JsonProperty("serverbundle", ObjectCreationHandling = ObjectCreationHandling.Replace)]
 			public ServerBundle ServerBundle;
 		}
 
 		private class ServerBundle
 		{
-			[JsonProperty(PropertyName = "id")] public string ID;
+			[JsonProperty("id")] public string ID;
 
-			[JsonProperty(PropertyName = "name")] public string Name;
+			[JsonProperty("name")] public string Name;
 
-			[JsonProperty(PropertyName = "color")] public string Color;
+			[JsonProperty("color")] public string Color;
 
-			[JsonProperty(PropertyName = "icon")] public object Icon;
+			[JsonProperty("icon")] public object Icon;
 
-			[JsonProperty(PropertyName = "sort_id")]
+			[JsonProperty("sort_id")]
 			public int SortID;
 		}
 
 		private class AppliedPacket
 		{
-			[JsonProperty(PropertyName = "id")] public string ID;
+			[JsonProperty("id")] public string ID;
 
-			[JsonProperty(PropertyName = "purchase")]
+			[JsonProperty("purchase")]
 			public Purchase Purchase;
 
-			[JsonProperty(PropertyName = "packet")]
+			[JsonProperty("packet")]
 			public Packet Packet;
 		}
 
 		private class Purchase
 		{
-			[JsonProperty(PropertyName = "id")] public string ID;
+			[JsonProperty("id")] public string ID;
 
-			[JsonProperty(PropertyName = "amount_text")]
+			[JsonProperty("amount_text")]
 			public string AmountText;
 		}
 
 		private class Packet
 		{
-			[JsonProperty(PropertyName = "id")] public string ID;
+			[JsonProperty("id")] public string ID;
 
-			[JsonProperty(PropertyName = "title")] public string Title;
+			[JsonProperty("title")] public string Title;
 		}
 
 		private class User
 		{
-			[JsonProperty(PropertyName = "id")] public string ID;
+			[JsonProperty("id")] public string ID;
 
-			[JsonProperty(PropertyName = "username")]
+			[JsonProperty("username")]
 			public string Username;
 
-			[JsonProperty(PropertyName = "type")] public string Type;
+			[JsonProperty("type")] public string Type;
 
-			[JsonProperty(PropertyName = "identifier")]
+			[JsonProperty("identifier")]
 			public string Identifier;
 
-			[JsonProperty(PropertyName = "avatar")]
+			[JsonProperty("avatar")]
 			public string Avatar;
 		}
 
@@ -2410,9 +2657,9 @@ namespace Oxide.Plugins
 		#region Fetching
 
 		private bool _enabledFetching;
-		
+
 		private Coroutine _coroutineFetching;
-		
+
 		private void InitFetching()
 		{
 			_enabledFetching = true;
@@ -2434,6 +2681,8 @@ namespace Oxide.Plugins
 			{
 				var onlinePlayers = GetOnlinePlayers.ToArray();
 
+				FetchWarnedUsers();
+				
 				FetchRewards(onlinePlayers);
 
 				FetchVyHubBans(bans => SyncBans());
@@ -2451,7 +2700,7 @@ namespace Oxide.Plugins
 
 				SendPlayerTime();
 
-				yield return CoroutineEx.waitForSeconds(60);
+				yield return CoroutineEx.waitForSeconds(30);
 			}
 		}
 
@@ -2956,6 +3205,8 @@ namespace Oxide.Plugins
 			AddCovalenceCommand(CMD_EDIT_CONFIG, nameof(CmdEditConfig));
 
 			AddCovalenceCommand(CMD_SETUP_CONFIG, nameof(CmdSetupConfig));
+
+			AddCovalenceCommand(CMD_WARN, nameof(CmdWarn));
 
 #if RUST
 			AddCovalenceCommand(DashboardOpenCmd, nameof(CmdOpenDashboard));
