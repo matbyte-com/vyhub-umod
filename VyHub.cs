@@ -1,5 +1,9 @@
 ﻿// #define TESTING
 
+#if TESTING
+     #define RUST
+#endif
+
 using System;
 using System.Collections;
 using Newtonsoft.Json;
@@ -21,7 +25,7 @@ using Oxide.Game.Rust.Cui;
 
 namespace Oxide.Plugins
 {
-	[Info("VyHub", "VyHub", "1.3.0")]
+	[Info("VyHub", "VyHub", "1.3.1")]
 	[Description(
 		"VyHub plugin to manage and monetize your Rust / 7 Days to Die server. You can create your webstore for free with VyHub!")]
 	public class VyHub : CovalencePlugin
@@ -1620,6 +1624,8 @@ namespace Oxide.Plugins
 								}
 								case DASHBOARD_ACTION_WARN:
 								{
+									_warnedUsers.Add(targetID);
+
 									NextTick(() => CreateWarning(player.IPlayer, covalence.Players.FindPlayerById(targetID), confirmData.Reason));
 									break;
 								}
