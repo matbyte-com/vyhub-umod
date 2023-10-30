@@ -11,7 +11,6 @@ using Newtonsoft.Json.Linq;
 using Oxide.Core;
 using Oxide.Core.Libraries;
 using Oxide.Core.Libraries.Covalence;
-using Oxide.Game.Rust.Libraries.Covalence;
 using UnityEngine;
 using UnityEngine.Networking;
 using Time = UnityEngine.Time;
@@ -22,6 +21,7 @@ using System.Globalization;
 using System.Linq;
 using Oxide.Core.Plugins;
 using Oxide.Game.Rust.Cui;
+using Oxide.Game.Rust.Libraries.Covalence;
 #endif
 
 namespace Oxide.Plugins
