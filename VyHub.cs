@@ -2744,7 +2744,7 @@ namespace Oxide.Plugins
 
 				SendPlayerTime();
 
-				yield return CoroutineEx.waitForSeconds(30);
+				yield return CoroutineEx.waitForSeconds(60f);
 			}
 		}
 
