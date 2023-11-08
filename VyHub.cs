@@ -26,7 +26,7 @@ using Oxide.Game.Rust.Libraries.Covalence;
 
 namespace Oxide.Plugins
 {
-	[Info("VyHub", "VyHub", "1.3.2")]
+	[Info("VyHub", "VyHub", "1.3.3")]
 	[Description(
 		"VyHub plugin to manage and monetize your Rust / 7 Days to Die server. You can create your webstore for free with VyHub!")]
 	public class VyHub : CovalencePlugin
@@ -35,9 +35,8 @@ namespace Oxide.Plugins
 
 		private string _serverBundleID = string.Empty;
 
-		private const string GameType = "STEAM";
-
-		private const string
+		private const string 
+			GameType = "STEAM",
 			CMD_EDIT_CONFIG = "vh_config",
 			CMD_SETUP_CONFIG = "vh_setup",
 			CMD_WARN = "warn";
@@ -128,7 +127,7 @@ namespace Oxide.Plugins
 				UserEndpoint = $"{URL}/user/";
 				UserActivityEndpoint = $"{URL}/server/{ServerID}/user-activity";
 				PlaytimeDefinitionEndpoint = $"{URL}/user/attribute/definition";
-				PlaytimeEndpoint = $"{URL}/user/attribute";
+				PlaytimeEndpoint = $"{URL}/user/attribute/";
 				ServerBundleEndpoint = $"{URL}/server/bundle/";
 				BansEndpoint = $"{URL}/ban/";
 				WarningsEndpoint = $"{URL}/warning/";
@@ -227,6 +226,8 @@ namespace Oxide.Plugins
 
 		private void OnServerInitialized()
 		{
+			RegisterPermissions();
+			
 			RegisterCommands();
 
 			_config.API.InitOrUpdate();
@@ -239,7 +240,7 @@ namespace Oxide.Plugins
 			{
 				GetPlaytimeDefinition(() =>
 				{
-					InitFetching();
+					StartTimers();
 
 					InitAdverts();
 
@@ -250,18 +251,13 @@ namespace Oxide.Plugins
 
 		private void Unload()
 		{
-			_coroutinesSendExecutedRewards.ToList().ForEach(coroutine =>
-			{
-				if (coroutine != null) Rust.Global.Runner.StopCoroutine(coroutine);
-			});
-
 #if RUST
 			UnloadDashboardUIs();
 #endif
 
 			DisposeActiveRequests();
 
-			StopFetching();
+			DestroyTimers();
 
 			SendPlayerTime(true);
 
@@ -348,7 +344,7 @@ namespace Oxide.Plugins
 				if (!vyHubBans.ContainsKey(id))
 				{
 					Puts("Adding banned player to VyHub");
-					CreateVyHubBanWithoutCreator(null, reason, id, DateTime.UtcNow);
+					AddVyHubBan(id);
 				}
 			});
 		}
@@ -409,7 +405,10 @@ namespace Oxide.Plugins
 		private readonly string
 			MSG_EDIT_CONFIG_ERR_SYNTAX = $"Error syntax! Use: /{CMD_EDIT_CONFIG} <api_key/api_url/server_id> <value>",
 			MSG_SETUP_CONFIG_ERR_SYNTAX = $"Error syntax! Use: /{CMD_EDIT_CONFIG} <api_key> <api_url> <server_id>",
-			MSG_WARN_ERR_SYNTAX = $"Error syntax! Use: /{CMD_WARN} <steam id> <reason>";
+			MSG_WARN_ERR_SYNTAX = $"Error syntax! Use: /{CMD_WARN} <steam id> <reason>",
+			MSG_WARN_NO_PERMISSIONS = "You do not have permission to warn other players!",
+			MSG_BAN_NO_PERMISSIONS = "You do not have permission to ban other players!", 
+			MSG_UNBAN_NO_PERMISSIONS = "You do not have permission to unban other players!";
 
 		private void CmdEditConfig(IPlayer player, string command, string[] args)
 		{
@@ -501,7 +500,11 @@ namespace Oxide.Plugins
 
 		private void CmdWarn(IPlayer player, string command, string[] args)
 		{
-			if (!player.IsAdmin && !player.IsServer) return;
+			if (!player.IsServer && !player.HasPermission($"{Name}.warn"))
+			{
+				player.Reply(MSG_WARN_NO_PERMISSIONS);
+				return;
+			}
 
 			if (args.Length < 2)
 			{
@@ -635,8 +638,6 @@ namespace Oxide.Plugins
 
 			if (first)
 			{
-				CuiHelper.DestroyUi(player, DashboardLayer + ".Background");
-
 				container.Add(new CuiPanel
 				{
 					RectTransform = {AnchorMin = "0 0", AnchorMax = "1 1"},
@@ -646,7 +647,7 @@ namespace Oxide.Plugins
 						Material = "assets/content/ui/uibackgroundblur.mat"
 					},
 					CursorEnabled = true
-				}, "Overlay", DashboardLayer + ".Background");
+				}, "Overlay", DashboardLayer + ".Background", DashboardLayer + ".Background");
 
 				container.Add(new CuiButton
 				{
@@ -685,7 +686,7 @@ namespace Oxide.Plugins
 				{
 					Color = "0 0 0 0"
 				}
-			}, DashboardLayer, DashboardMainLayer);
+			}, DashboardLayer, DashboardMainLayer, DashboardMainLayer);
 
 			#endregion
 
@@ -1003,8 +1004,8 @@ namespace Oxide.Plugins
 					for (var index = 0; index < members.Length; index++)
 					{
 						var member = members[index];
-						var isWarned = _warnedUsers.Contains(member.UserIDString);
-						var isBanned = member.IPlayer?.IsBanned == true;
+						var isWarned = _warnedUsers.Contains(member.Id);
+						var isBanned = member?.IsBanned == true || _cachedBans.Contains(member.Id);
 
 						#region Background
 
@@ -1033,7 +1034,7 @@ namespace Oxide.Plugins
 							{
 								new CuiRawImageComponent
 								{
-									Png = ImageLibrary.Call<string>("GetImage", $"avatar_{member.UserIDString}")
+									Png = ImageLibrary.Call<string>("GetImage", $"avatar_{member.Id}")
 								},
 								new CuiRectTransformComponent
 								{
@@ -1058,7 +1059,7 @@ namespace Oxide.Plugins
 								},
 								Text =
 								{
-									Text = $"{member.displayName}",
+									Text = $"{member.Name}",
 									Align = TextAnchor.LowerLeft,
 									Font = "robotocondensed-bold.ttf",
 									FontSize = 12,
@@ -1076,7 +1077,7 @@ namespace Oxide.Plugins
 								},
 								Text =
 								{
-									Text = $"{member.UserIDString}",
+									Text = $"{member.Id}",
 									Align = TextAnchor.UpperLeft,
 									Font = "robotocondensed-regular.ttf",
 									FontSize = 10,
@@ -1111,8 +1112,8 @@ namespace Oxide.Plugins
 								{
 									Command = 
 										isBanned ?
-										$"{DashboardConsoleCmd} {DASHBOARD_ACTION_UNBAN} {member.UserIDString}"
-										: $"{DashboardConsoleCmd} {DASHBOARD_ACTION_BAN} {member.UserIDString}",
+										$"{DashboardConsoleCmd} {DASHBOARD_ACTION_UNBAN} {member.Id}"
+										: $"{DashboardConsoleCmd} {DASHBOARD_ACTION_BAN} {member.Id}",
 									Color = _color9
 								}
 							}, DashboardMainLayer + $".Content.Player.{index}");
@@ -1142,7 +1143,7 @@ namespace Oxide.Plugins
 									Command = 
 										isWarned 
 											? ""
-										: $"{DashboardConsoleCmd} {DASHBOARD_ACTION_WARN} {member.UserIDString}",
+										: $"{DashboardConsoleCmd} {DASHBOARD_ACTION_WARN} {member.Id}",
 									Color = isWarned ? _color10 : _color4
 								}
 							}, DashboardMainLayer + $".Content.Player.{index}");
@@ -1171,7 +1172,6 @@ namespace Oxide.Plugins
 
 			#endregion
 
-			CuiHelper.DestroyUi(player, DashboardMainLayer);
 			CuiHelper.AddUi(player, container);
 		}
 
@@ -1195,7 +1195,7 @@ namespace Oxide.Plugins
 					Material = "assets/content/ui/uibackgroundblur.mat"
 				},
 				CursorEnabled = true
-			}, "Overlay", DashboardConfirmLayer);
+			}, "Overlay", DashboardConfirmLayer, DashboardConfirmLayer);
 
 			container.Add(new CuiButton
 			{
@@ -1228,7 +1228,7 @@ namespace Oxide.Plugins
 				{
 					Color = _color1
 				}
-			}, DashboardConfirmLayer, DashboardConfirmMainLayer);
+			}, DashboardConfirmLayer, DashboardConfirmMainLayer, DashboardConfirmMainLayer);
 
 			#endregion
 
@@ -1283,8 +1283,9 @@ namespace Oxide.Plugins
 				},
 				Button =
 				{
-					Close = DashboardConfirmMainLayer,
-					Color = _color4
+					Close = DashboardConfirmLayer,
+					Color = _color4,
+					Command = $"{DashboardConsoleCmd} confirm cancel"
 				}
 			}, DashboardConfirmMainLayer + ".Header");
 
@@ -1421,7 +1422,6 @@ namespace Oxide.Plugins
 
 			#endregion
 
-			CuiHelper.DestroyUi(player, DashboardConfirmLayer);
 			CuiHelper.AddUi(player, container);
 		}
 
@@ -1518,8 +1518,9 @@ namespace Oxide.Plugins
 
 		private void CmdOpenDashboard(IPlayer cov, string command, string[] args)
 		{
-			if (!cov.IsAdmin) return;
-
+			if (!cov.HasPermission($"{Name}.dashboard"))
+				return;
+			
 			var player = cov.Object as BasePlayer;
 			if (player == null) return;
 
@@ -1530,8 +1531,10 @@ namespace Oxide.Plugins
 		private void CmdConsoleDashboard(ConsoleSystem.Arg arg)
 		{
 			var player = arg?.Player();
-			if (player == null || !arg.IsAdmin || !arg.HasArgs()) return;
-
+			if (player == null || !arg.HasArgs() || 
+			    !permission.UserHasPermission(player.UserIDString, $"{Name}.dashboard"))
+				return;
+			
 			switch (arg.Args[0])
 			{
 				case "page":
@@ -1557,6 +1560,13 @@ namespace Oxide.Plugins
 					ulong targetID;
 					if (!arg.HasArgs(2) || !ulong.TryParse(arg.Args[1], out targetID)) return;
 
+					string permissionMsg;
+					if (!HasActionPermission(player.UserIDString, arg.Args[0], out permissionMsg))
+					{
+						player.ChatMessage(permissionMsg);
+						return;
+					}
+					
 					if (player.userID == targetID)
 					{
 						player.ChatMessage($"You can't {arg.Args[0]} yourself!");
@@ -1575,6 +1585,13 @@ namespace Oxide.Plugins
 					ulong targetID;
 					if (!arg.HasArgs(2) || !ulong.TryParse(arg.Args[1], out targetID)) return;
 
+					string permissionMsg;
+					if (!HasActionPermission(player.UserIDString, arg.Args[0], out permissionMsg))
+					{
+						player.ChatMessage(permissionMsg);
+						return;
+					}
+					
 					if (player.userID == targetID)
 					{
 						player.ChatMessage($"You can't {arg.Args[0]} yourself!");
@@ -1593,6 +1610,23 @@ namespace Oxide.Plugins
 					if (!arg.HasArgs(2)) return;
 
 					var action = arg.Args[1];
+
+					switch (action)
+					{
+						case DASHBOARD_ACTION_WARN:
+						case DASHBOARD_ACTION_BAN:
+						case DASHBOARD_ACTION_UNBAN:
+						{
+							string permissionMsg;
+							if (!HasActionPermission(player.UserIDString, action, out permissionMsg))
+							{
+								player.ChatMessage(permissionMsg);
+								return;
+							}
+							break;
+						}
+					}
+					
 					switch (action)
 					{
 						case DASHBOARD_ACTION_BAN:
@@ -1613,16 +1647,43 @@ namespace Oxide.Plugins
 								case DASHBOARD_ACTION_BAN:
 								{
 									var duration = default(TimeSpan);
-
-									if (!string.IsNullOrWhiteSpace(confirmData.Duration))
+									if (!string.IsNullOrEmpty(confirmData.Duration))
 									{
-										var seconds = Convert.ToInt32(confirmData.Duration);
-										if (seconds > 0) duration = TimeSpan.FromSeconds(seconds);
+										var seconds = Convert.ToDouble(confirmData.Duration);
+										if (seconds > 0) 
+											duration = TimeSpan.FromSeconds(seconds);
+									}
+									
+									if (string.IsNullOrEmpty(confirmData.Reason)) 
+										confirmData.Reason = "no reason";
+
+									var targetPlayer = covalence.Players.FindPlayerById(targetID);
+									if (targetPlayer != null)
+									{
+										_cachedBans.Add(targetID);
+
+										var finalTime = duration.TotalSeconds > 0
+											? (long?) duration.TotalSeconds
+											: null;
+
+										var adminUser = GetVyHubUser(player.UserIDString);
+										if (adminUser != null)
+										{
+											CreateVyHubBan(finalTime, confirmData.Reason,
+												targetID, DateTime.UtcNow, adminUser.ID,
+												ban => targetPlayer.Ban(confirmData.Reason, duration));
+										}
+										else
+										{
+											CreateVyHubBanWithoutCreator(finalTime, confirmData.Reason,
+												targetID, DateTime.UtcNow,
+												ban => targetPlayer.Ban(confirmData.Reason, duration));
+										}
 									}
 
-									NextTick(() => server.Ban(targetID, confirmData.Reason, duration));
 									break;
 								}
+								
 								case DASHBOARD_ACTION_WARN:
 								{
 									_warnedUsers.Add(targetID);
@@ -1654,7 +1715,8 @@ namespace Oxide.Plugins
 							{
 								case DASHBOARD_ACTION_UNBAN:
 								{
-									NextTick(() => server.Unban(targetID));
+									server.Unban(targetID);
+									_cachedBans.Remove(targetID);
 									break;
 								}
 							}
@@ -1664,14 +1726,14 @@ namespace Oxide.Plugins
 							DashboardUI(player);
 							break;
 						}
-
+						
 						case "enter":
 						{
 							if (!arg.HasArgs(4)) return;
 
 							var confirmData = GetOrAddConfirmData(player);
 
-							var result = arg.Args[3] == "delete" ? string.Empty : string.Join(" ", arg.Args.Skip(4));
+							var result = arg.Args[3] == "delete" ? string.Empty : string.Join(" ", arg.Args.Skip(3));
 
 							switch (arg.Args[2])
 							{
@@ -1680,13 +1742,17 @@ namespace Oxide.Plugins
 									confirmData.Reason = result;
 									break;
 								}
+								
 								case "duration":
 								{
-									confirmData.Duration = result;
+									result = result.Replace(" ", string.Empty);
+									
+									double durationTime;
+									if (double.TryParse(result, out durationTime))
+										confirmData.Duration = result;
 									break;
 								}
 							}
-
 							break;
 						}
 					}
@@ -1700,6 +1766,39 @@ namespace Oxide.Plugins
 
 		#region Utils
 
+		private bool HasActionPermission(string playerID, string action, out string resultMessage)
+		{
+			resultMessage = string.Empty;
+ 
+			string permToCheck;
+			
+			switch (action)
+			{
+				case DASHBOARD_ACTION_BAN:
+					permToCheck = $"{Name}.ban";
+
+					resultMessage = MSG_BAN_NO_PERMISSIONS;
+					break;
+				
+				case DASHBOARD_ACTION_WARN:
+					permToCheck = $"{Name}.warn";
+
+					resultMessage = MSG_WARN_NO_PERMISSIONS;
+					break;
+				
+				case DASHBOARD_ACTION_UNBAN:
+					permToCheck = $"{Name}.unban";
+
+					resultMessage = MSG_UNBAN_NO_PERMISSIONS;
+					break;
+				
+				default:
+					return true;
+			}
+			
+			return permission.UserHasPermission(playerID, permToCheck);
+		}
+		
 		private void UnloadDashboardUIs()
 		{
 			for (var i = 0; i < BasePlayer.activePlayerList.Count; i++)
@@ -1720,16 +1819,16 @@ namespace Oxide.Plugins
 			return confirmData;
 		}
 
-		private BasePlayer[] GetPlayers(int page, string search)
+		private IPlayer[] GetPlayers(int page, string search)
 		{
 			return HasSearch(search)
-				? BasePlayer.activePlayerList
-					.Where(p => p.UserIDString == search || p.displayName == search ||
-					            p.displayName.StartsWith(search) || p.displayName.Contains(search) ||
-					            (search.IsSteamId() && p.UserIDString.Contains(search)))
+				? covalence.Players.All
+					.Where(p => p.Id == search || p.Name == search ||
+					            p.Name.StartsWith(search) || p.Name.Contains(search) ||
+					            (search.IsSteamId() && p.Id.Contains(search)))
 					.Skip(page * DASHBOARD_TABLE_PLAYERS_TOTAL_AMOUNT)
 					.Take(DASHBOARD_TABLE_PLAYERS_TOTAL_AMOUNT).ToArray()
-				: BasePlayer.activePlayerList
+				: covalence.Players.All
 					.Skip(page * DASHBOARD_TABLE_PLAYERS_TOTAL_AMOUNT)
 					.Take(DASHBOARD_TABLE_PLAYERS_TOTAL_AMOUNT).ToArray();
 		}
@@ -2032,9 +2131,8 @@ namespace Oxide.Plugins
 
 		private void SendPlayerTime(VyHubUser user, double hours, Action callback = null)
 		{
-			if (user == null) return;
-
-			if (hours < 0.1)
+			if (user == null || 
+			    hours < 0.1)
 				return;
 
 			SendWebRequest(_config.API.PlaytimeEndpoint, new Dictionary<string, object>
@@ -2077,6 +2175,26 @@ namespace Oxide.Plugins
 			GetOrCreateUser(playerID, user =>
 			{
 				SendWebRequestAndFetch(_config.API.BansEndpoint,
+					new Dictionary<string, object>
+					{
+						["length"] = finalTime,
+						["reason"] = reason,
+						["serverbundle_id"] = _serverBundleID,
+						["user_id"] = user.ID,
+						["created_on"] = time.ToString(@"yyyy-MM-dd\THH:mm:ss.fff\Z")
+					},
+					"Failed to create ban: {0}",
+					"Ban",
+					callback, RequestMethod.POST);
+			});
+		}
+
+		private void CreateVyHubBan(long? finalTime, string reason, string playerID, DateTime time, string adminID,
+			Action<BanData> callback = null)
+		{
+			GetOrCreateUser(playerID, user =>
+			{
+				SendWebRequestAndFetch(_config.API.BansEndpoint + $"?morph_user_id={adminID}",
 					new Dictionary<string, object>
 					{
 						["length"] = finalTime,
@@ -2177,7 +2295,7 @@ namespace Oxide.Plugins
 		{
 			GetOrCreateUser(playerID, user =>
 			{
-				SendWebRequest(_config.API.WarningsEndpoint + $"morph_user_id={adminID}",
+				SendWebRequest(_config.API.WarningsEndpoint + $"?morph_user_id={adminID}",
 					new Dictionary<string, object>
 					{
 						["reason"] = reason,
@@ -2543,10 +2661,12 @@ namespace Oxide.Plugins
 					$"Cannot fetch {fetchType} from VyHub API! Please follow the installation instructions.",
 					callback);
 			else
+			{
 				SendWebRequest(endpoint, body,
 					errOnResponse,
 					$"Cannot fetch {fetchType} from VyHub API! Please follow the installation instructions.",
 					callback, method, ignoreCheck, onResponse);
+			}
 		}
 		
 		private void SendWebRequest<T>(string endpoint, Dictionary<string, object> body,
@@ -2700,28 +2820,11 @@ namespace Oxide.Plugins
 
 		#region Fetching
 
-		private bool _enabledFetching;
-
-		private Coroutine _coroutineFetching;
-
-		private void InitFetching()
+		private Timer _timerGlobal, _timerPlayerTime, _timerSyncGroups;
+		
+		private void StartTimers()
 		{
-			_enabledFetching = true;
-
-			_coroutineFetching = Rust.Global.Runner.StartCoroutine(HandleFetching());
-		}
-
-		private void StopFetching()
-		{
-			_enabledFetching = false;
-
-			if (_coroutineFetching != null)
-				Rust.Global.Runner.StopCoroutine(_coroutineFetching);
-		}
-
-		private IEnumerator HandleFetching()
-		{
-			while (_enabledFetching)
+			_timerGlobal = timer.Every(60, () =>
 			{
 				var onlinePlayers = GetOnlinePlayers.ToArray();
 
@@ -2731,23 +2834,35 @@ namespace Oxide.Plugins
 
 				FetchVyHubBans(bans => SyncBans());
 
+				FetchAdverts(averts => _adverts = averts);
+
+				PatchServer(onlinePlayers);
+			});
+
+			_timerSyncGroups = timer.Every(300, () =>
+			{				
+				var onlinePlayers = GetOnlinePlayers.ToArray();
+
 				FetchGroups(groups =>
 				{
 					UpdateGroups(groups);
 
 					SyncGroupsForAll(onlinePlayers);
 				});
-
-				FetchAdverts(averts => _adverts = averts);
-
-				PatchServer(onlinePlayers);
-
-				SendPlayerTime();
-
-				yield return CoroutineEx.waitForSeconds(60f);
-			}
+			});
+			
+			_timerPlayerTime = timer.Every(3600, () => SendPlayerTime());
 		}
 
+		private void DestroyTimers()
+		{
+			_timerGlobal?.Destroy();
+			
+			_timerSyncGroups?.Destroy();
+			
+			_timerPlayerTime?.Destroy();
+		}
+		
 		#region Utils
 
 		private void PatchServer(VyHubUser[] onlinePlayers)
@@ -2825,10 +2940,6 @@ namespace Oxide.Plugins
 
 		private Dictionary<string, float> _dataPlayTimes = new Dictionary<string, float>();
 
-		private float _lastSendPlayerTime;
-
-		private const float _cooldownPlayerTime = 3600; //hour
-
 		private float GetPlayTimes(string playerID)
 		{
 			float time;
@@ -2847,23 +2958,17 @@ namespace Oxide.Plugins
 
 		private void SendPlayerTime(bool fast = false)
 		{
-			#region Cooldown
-
-			if (fast == false && _lastSendPlayerTime > 0f &&
-			    _lastSendPlayerTime + _cooldownPlayerTime >= Time.time) return;
-
-			_lastSendPlayerTime = Time.time;
-
-			#endregion
-
 			Log(LogType.INFO, "Sending playertime to API");
 
 			if (!string.IsNullOrEmpty(definitionID))
 				Array.ForEach(_dataPlayTimes.ToArray(), check =>
 				{
-					var hours = TimeSpan.FromSeconds(Time.time - check.Value).TotalHours;
+					var hours = Math.Round(TimeSpan.FromSeconds(Time.time - check.Value).TotalHours, 2);
 
-					SendPlayerTime(check.Key.ToString(), hours, () => ResetTimes(check.Key));
+					SendPlayerTime(check.Key.ToString(), hours, () =>
+					{
+						ResetTimes(check.Key);
+					});
 				});
 		}
 
@@ -2980,10 +3085,6 @@ namespace Oxide.Plugins
 
 		private bool AddGameBan(string playerID, BanData ban)
 		{
-#if TESTING
-			Puts($"[AddGameBan] playerID={playerID}, ban={JsonConvert.SerializeObject(ban)}");
-#endif
-			
 			var banReason = ban.Reason;
 			if (string.IsNullOrEmpty(banReason))
 				banReason = "no reason";
@@ -3025,14 +3126,11 @@ namespace Oxide.Plugins
 			var player = covalence.Players.FindPlayerById(playerID);
 			if (player == null) return;
 
-			GetOrCreateUser(playerID, user =>
-			{
-				var serverUser = ServerUsers.Get(Convert.ToUInt64(playerID));
-				if (serverUser == null) return;
+			var serverUser = ServerUsers.Get(Convert.ToUInt64(playerID));
+			if (serverUser == null) return;
 
-				CreateVyHubBanWithoutCreator((long) Mathf.Max(serverUser.expiry, 0), serverUser.notes, playerID,
-					DateTime.UtcNow, callback);
-			});
+			CreateVyHubBanWithoutCreator(serverUser.expiry > 0 ? serverUser.expiry : (long?) null, serverUser.notes, playerID,
+				DateTime.UtcNow, callback);
 		}
 
 		#endregion
@@ -3122,9 +3220,7 @@ namespace Oxide.Plugins
 		private List<string> _executedRewards = new List<string>();
 
 		private List<string> _executedAndSentRewards = new List<string>();
-
-		private List<Coroutine> _coroutinesSendExecutedRewards = new List<Coroutine>();
-
+		
 		private void ExecuteReward(List<string> events, string playerID)
 		{
 			if (events == null) return;
@@ -3220,14 +3316,12 @@ namespace Oxide.Plugins
 
 		private void SendExecutedRewards()
 		{
-			_coroutinesSendExecutedRewards.Add(Rust.Global.Runner.StartCoroutine(AsyncExecutedRewards()));
+			Rust.Global.Runner.StartCoroutine(AsyncExecutedRewards());
 		}
 
 		private IEnumerator AsyncExecutedRewards()
 		{
-			var rewards = _executedRewards.ToArray();
-
-			foreach (var reward in rewards)
+			foreach (var reward in _executedRewards.ToArray())
 			{
 				SendExecutedReward(reward, appliedReward =>
 				{
@@ -3264,6 +3358,17 @@ namespace Oxide.Plugins
 
 		#endregion
 
+		private void RegisterPermissions()
+		{
+			permission.RegisterPermission($"{Name}.dashboard", this);
+			
+			permission.RegisterPermission($"{Name}.warn", this);
+			
+			permission.RegisterPermission($"{Name}.ban", this);
+			
+			permission.RegisterPermission($"{Name}.unban", this);
+		}
+		
 		private void RegisterCommands()
 		{
 			AddCovalenceCommand(CMD_EDIT_CONFIG, nameof(CmdEditConfig));
