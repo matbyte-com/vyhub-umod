@@ -7,7 +7,6 @@
 using System;
 using System.Collections;
 using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 using Oxide.Core;
 using Oxide.Core.Libraries;
 using Oxide.Core.Libraries.Covalence;
@@ -16,6 +15,7 @@ using UnityEngine.Networking;
 using Time = UnityEngine.Time;
 
 #if RUST
+using System.Text.RegularExpressions;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -26,7 +26,7 @@ using Oxide.Game.Rust.Libraries.Covalence;
 
 namespace Oxide.Plugins
 {
-	[Info("VyHub", "VyHub", "1.3.3")]
+	[Info("VyHub", "VyHub", "1.3.4")]
 	[Description(
 		"VyHub plugin to manage and monetize your Rust / 7 Days to Die server. You can create your webstore for free with VyHub!")]
 	public class VyHub : CovalencePlugin
@@ -42,8 +42,8 @@ namespace Oxide.Plugins
 			CMD_WARN = "warn";
 
 		private readonly List<UnityWebRequest> _activeRequests = new List<UnityWebRequest>();
-
-		private List<string> _warnedUsers = new List<string>();
+		
+		private ListHashSet<string> _warnedUsers = new ListHashSet<string>();
 		
 		#endregion
 
@@ -293,6 +293,11 @@ namespace Oxide.Plugins
 
 				SyncGroups(user);
 			});
+
+#if RUST
+			GetAvatar(player.Id,
+				avatar => ImageLibrary?.Call("AddImage", avatar, $"avatar_{player.Id}"));
+#endif
 		}
 
 		private void OnUserDisconnected(IPlayer player)
@@ -1004,8 +1009,8 @@ namespace Oxide.Plugins
 					for (var index = 0; index < members.Length; index++)
 					{
 						var member = members[index];
-						var isWarned = _warnedUsers.Contains(member.Id);
-						var isBanned = member?.IsBanned == true || _cachedBans.Contains(member.Id);
+						var isWarned = _warnedUsers.Contains(member.UserIDString);
+						var isBanned = server.IsBanned(player.UserIDString) || _cachedBans.Contains(member.UserIDString);
 
 						#region Background
 
@@ -1034,7 +1039,7 @@ namespace Oxide.Plugins
 							{
 								new CuiRawImageComponent
 								{
-									Png = ImageLibrary.Call<string>("GetImage", $"avatar_{member.Id}")
+									Png = ImageLibrary.Call<string>("GetImage", $"avatar_{member.UserIDString}")
 								},
 								new CuiRectTransformComponent
 								{
@@ -1059,7 +1064,7 @@ namespace Oxide.Plugins
 								},
 								Text =
 								{
-									Text = $"{member.Name}",
+									Text = $"{member.displayName}",
 									Align = TextAnchor.LowerLeft,
 									Font = "robotocondensed-bold.ttf",
 									FontSize = 12,
@@ -1077,7 +1082,7 @@ namespace Oxide.Plugins
 								},
 								Text =
 								{
-									Text = $"{member.Id}",
+									Text = $"{member.UserIDString}",
 									Align = TextAnchor.UpperLeft,
 									Font = "robotocondensed-regular.ttf",
 									FontSize = 10,
@@ -1112,8 +1117,8 @@ namespace Oxide.Plugins
 								{
 									Command = 
 										isBanned ?
-										$"{DashboardConsoleCmd} {DASHBOARD_ACTION_UNBAN} {member.Id}"
-										: $"{DashboardConsoleCmd} {DASHBOARD_ACTION_BAN} {member.Id}",
+										$"{DashboardConsoleCmd} {DASHBOARD_ACTION_UNBAN} {member.UserIDString}"
+										: $"{DashboardConsoleCmd} {DASHBOARD_ACTION_BAN} {member.UserIDString}",
 									Color = _color9
 								}
 							}, DashboardMainLayer + $".Content.Player.{index}");
@@ -1143,7 +1148,7 @@ namespace Oxide.Plugins
 									Command = 
 										isWarned 
 											? ""
-										: $"{DashboardConsoleCmd} {DASHBOARD_ACTION_WARN} {member.Id}",
+										: $"{DashboardConsoleCmd} {DASHBOARD_ACTION_WARN} {member.UserIDString}",
 									Color = isWarned ? _color10 : _color4
 								}
 							}, DashboardMainLayer + $".Content.Player.{index}");
@@ -1527,26 +1532,25 @@ namespace Oxide.Plugins
 			DashboardUI(player, first: true);
 		}
 
-		[ConsoleCommand(DashboardConsoleCmd)]
-		private void CmdConsoleDashboard(ConsoleSystem.Arg arg)
+		private void CmdConsoleDashboard(IPlayer covPlayer, string command, string[] args)
 		{
-			var player = arg?.Player();
-			if (player == null || !arg.HasArgs() || 
+			var player = covPlayer?.Object as BasePlayer;
+			if (player == null || args.Length < 1 || 
 			    !permission.UserHasPermission(player.UserIDString, $"{Name}.dashboard"))
 				return;
 			
-			switch (arg.Args[0])
+			switch (args[0])
 			{
 				case "page":
 				{
 					DashboardTab targetTab;
-					if (!arg.HasArgs(2) || !Enum.TryParse(arg.Args[1], out targetTab)) return;
+					if (!(args.Length >= 2) || !Enum.TryParse(args[1], out targetTab)) return;
 
 					var page = 0;
-					if (arg.HasArgs(3))
-						int.TryParse(arg.Args[2], out page);
+					if (args.Length >= 3)
+						int.TryParse(args[2], out page);
 
-					var search = arg.HasArgs(4) ? arg.Args[3] : string.Empty;
+					var search = args.Length >= 4 ? args[3] : string.Empty;
 					if (search == "delete")
 						search = string.Empty;
 
@@ -1558,10 +1562,10 @@ namespace Oxide.Plugins
 				case DASHBOARD_ACTION_WARN:
 				{
 					ulong targetID;
-					if (!arg.HasArgs(2) || !ulong.TryParse(arg.Args[1], out targetID)) return;
+					if (!(args.Length >= 2) || !ulong.TryParse(args[1], out targetID)) return;
 
 					string permissionMsg;
-					if (!HasActionPermission(player.UserIDString, arg.Args[0], out permissionMsg))
+					if (!HasActionPermission(player.UserIDString, args[0], out permissionMsg))
 					{
 						player.ChatMessage(permissionMsg);
 						return;
@@ -1569,24 +1573,24 @@ namespace Oxide.Plugins
 					
 					if (player.userID == targetID)
 					{
-						player.ChatMessage($"You can't {arg.Args[0]} yourself!");
+						player.ChatMessage($"You can't {args[0]} yourself!");
 						return;
 					}
 
 					var targetPlayer = covalence.Players.FindPlayerById(targetID.ToString());
 					if (targetPlayer == null) return;
 
-					ConfirmActionUI(player, arg.Args[0], targetPlayer.Name, targetID);
+					ConfirmActionUI(player, args[0], targetPlayer.Name, targetID);
 					break;
 				}
 
 				case DASHBOARD_ACTION_UNBAN:
 				{
 					ulong targetID;
-					if (!arg.HasArgs(2) || !ulong.TryParse(arg.Args[1], out targetID)) return;
+					if (!(args.Length >= 2) || !ulong.TryParse(args[1], out targetID)) return;
 
 					string permissionMsg;
-					if (!HasActionPermission(player.UserIDString, arg.Args[0], out permissionMsg))
+					if (!HasActionPermission(player.UserIDString, args[0], out permissionMsg))
 					{
 						player.ChatMessage(permissionMsg);
 						return;
@@ -1594,22 +1598,22 @@ namespace Oxide.Plugins
 					
 					if (player.userID == targetID)
 					{
-						player.ChatMessage($"You can't {arg.Args[0]} yourself!");
+						player.ChatMessage($"You can't {args[0]} yourself!");
 						return;
 					}
 
 					var targetPlayer = covalence.Players.FindPlayerById(targetID.ToString());
 					if (targetPlayer == null) return;
 
-					ConfirmActionUI(player, arg.Args[0], targetPlayer.Name, targetID);
+					ConfirmActionUI(player, args[0], targetPlayer.Name, targetID);
 					break;
 				}
 
 				case "confirm":
 				{
-					if (!arg.HasArgs(2)) return;
+					if (!(args.Length >= 2)) return;
 
-					var action = arg.Args[1];
+					var action = args[1];
 
 					switch (action)
 					{
@@ -1632,9 +1636,9 @@ namespace Oxide.Plugins
 						case DASHBOARD_ACTION_BAN:
 						case DASHBOARD_ACTION_WARN:
 						{
-							if (!arg.HasArgs(3)) return;
+							if (!(args.Length >= 3)) return;
 
-							var targetID = arg.Args[2];
+							var targetID = args[2];
 							if (string.IsNullOrWhiteSpace(targetID) || !targetID.IsSteamId())
 								return;
 
@@ -1701,9 +1705,9 @@ namespace Oxide.Plugins
 
 						case DASHBOARD_ACTION_UNBAN:
 						{
-							if (!arg.HasArgs(3)) return;
+							if (!(args.Length >= 3)) return;
 
-							var targetID = arg.Args[2];
+							var targetID = args[2];
 							if (string.IsNullOrWhiteSpace(targetID) || !targetID.IsSteamId())
 								return;
 
@@ -1729,13 +1733,13 @@ namespace Oxide.Plugins
 						
 						case "enter":
 						{
-							if (!arg.HasArgs(4)) return;
+							if (!(args.Length >= 4)) return;
 
 							var confirmData = GetOrAddConfirmData(player);
 
-							var result = arg.Args[3] == "delete" ? string.Empty : string.Join(" ", arg.Args.Skip(3));
+							var result = args[3] == "delete" ? string.Empty : string.Join(" ", args.Skip(3));
 
-							switch (arg.Args[2])
+							switch (args[2])
 							{
 								case "reason":
 								{
@@ -1766,6 +1770,29 @@ namespace Oxide.Plugins
 
 		#region Utils
 
+		#region Avatar
+		
+		private readonly Regex Regex = new Regex(@"<avatarFull><!\[CDATA\[(.*)\]\]></avatarFull>");
+
+		private void GetAvatar(string userId, Action<string> callback)
+		{
+			if (callback == null) return;
+
+			webrequest.Enqueue($"http://steamcommunity.com/profiles/{userId}?xml=1", null, (code, response) =>
+			{
+				if (code != 200 || response == null)
+					return;
+
+				var avatar = Regex.Match(response).Groups[1].ToString();
+				if (string.IsNullOrEmpty(avatar))
+					return;
+
+				callback.Invoke(avatar);
+			}, this);
+		}
+
+		#endregion
+		
 		private bool HasActionPermission(string playerID, string action, out string resultMessage)
 		{
 			resultMessage = string.Empty;
@@ -1819,16 +1846,15 @@ namespace Oxide.Plugins
 			return confirmData;
 		}
 
-		private IPlayer[] GetPlayers(int page, string search)
+		private BasePlayer[] GetPlayers(int page, string search)
 		{
-			return HasSearch(search)
-				? covalence.Players.All
-					.Where(p => p.Id == search || p.Name == search ||
-					            p.Name.StartsWith(search) || p.Name.Contains(search) ||
-					            (search.IsSteamId() && p.Id.Contains(search)))
+			return HasSearch(search) ? BasePlayer.activePlayerList
+					.Where(p => p.UserIDString == search || p.displayName == search ||
+			                                              p.displayName.StartsWith(search) || p.displayName.Contains(search) ||
+			                                              (search.IsSteamId() && p.UserIDString.Contains(search)))
 					.Skip(page * DASHBOARD_TABLE_PLAYERS_TOTAL_AMOUNT)
 					.Take(DASHBOARD_TABLE_PLAYERS_TOTAL_AMOUNT).ToArray()
-				: covalence.Players.All
+				: BasePlayer.activePlayerList
 					.Skip(page * DASHBOARD_TABLE_PLAYERS_TOTAL_AMOUNT)
 					.Take(DASHBOARD_TABLE_PLAYERS_TOTAL_AMOUNT).ToArray();
 		}
@@ -2000,11 +2026,11 @@ namespace Oxide.Plugins
 				"VyHub User",
 				new Action<List<UserActivity>>(users =>
 				{
-					_warnedUsers.Clear();
-					
-					users
-						.FindAll(user => user.Warnings.Count > 0 && user.Warnings.Exists(warn => warn.Active))
-						.ForEach(user => _warnedUsers.Add(user.Identifier));
+					users.ForEach(user =>
+					{
+						if (user.HasActiveWarns()) 
+							_warnedUsers.Add(user.Identifier);
+					});
 				}));
 		}
 
@@ -2027,6 +2053,13 @@ namespace Oxide.Plugins
 			
 			[JsonProperty("warnings")]
 			public List<Warning> Warnings;
+
+			public bool HasActiveWarns()
+			{
+				return Warnings?.Count > 0 && Warnings.Exists(x => x.Active);
+			}
+			
+			#region Classes
 
 			public class Warning
 			{
@@ -2066,6 +2099,8 @@ namespace Oxide.Plugins
 				[JsonProperty("avatar")]
 				public string Avatar;
 			}
+
+			#endregion
 		}
 		
 		#endregion
@@ -3379,9 +3414,17 @@ namespace Oxide.Plugins
 
 #if RUST
 			AddCovalenceCommand(DashboardOpenCmd, nameof(CmdOpenDashboard));
+			
+			AddCovalenceCommand(DashboardConsoleCmd, nameof(CmdConsoleDashboard));
 #endif
 		}
 
+		public List<T> SkipAndTake<T>(ref List<T> source, int skip, int take)
+		{
+			var index = Mathf.Min(Mathf.Max(skip, 0), source.Count);
+			return source.GetRange(index, Mathf.Min(take, source.Count - index));
+		}
+		
 		#endregion
 
 		#region Logs
