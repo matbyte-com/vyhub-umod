@@ -6,7 +6,9 @@
 
 using System;
 using System.Collections;
+using System.Text;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Oxide.Core;
 using Oxide.Core.Libraries;
 using Oxide.Core.Libraries.Covalence;
@@ -19,6 +21,7 @@ using System.Text.RegularExpressions;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using Facepunch.Math;
 using Oxide.Core.Plugins;
 using Oxide.Game.Rust.Cui;
 using Oxide.Game.Rust.Libraries.Covalence;
@@ -26,7 +29,7 @@ using Oxide.Game.Rust.Libraries.Covalence;
 
 namespace Oxide.Plugins
 {
-	[Info("VyHub", "VyHub", "1.3.4")]
+	[Info("VyHub", "VyHub", "1.3.9")]
 	[Description(
 		"VyHub plugin to manage and monetize your Rust / 7 Days to Die server. You can create your webstore for free with VyHub!")]
 	public class VyHub : CovalencePlugin
@@ -42,8 +45,10 @@ namespace Oxide.Plugins
 			CMD_WARN = "warn";
 
 		private readonly List<UnityWebRequest> _activeRequests = new List<UnityWebRequest>();
+
+		private readonly List<Coroutine> _coroutines = new List<Coroutine>();
 		
-		private ListHashSet<string> _warnedUsers = new ListHashSet<string>();
+		private HashSet<string> _warnedUsers = new HashSet<string>();
 		
 		#endregion
 
@@ -67,6 +72,9 @@ namespace Oxide.Plugins
 				Key = "Admin -> Settings -> Server -> Setup",
 				ServerID = "Admin -> Settings -> Server -> Setup"
 			};
+
+			[JsonProperty("Notify chat when a user has been blocked?")] 
+			public bool NotifyChatOnUserBlocked = true;
 		}
 
 		private class AdvertSettings
@@ -87,31 +95,23 @@ namespace Oxide.Plugins
 			[JsonProperty("Server ID")]
 			public string ServerID;
 
-			[JsonIgnore] public Dictionary<string, string> Headers;
+			[JsonIgnore] 
+			public Dictionary<string, string> Headers;
 
-			[JsonIgnore] public string ServerEndpoint;
-
-			[JsonIgnore] public string FetchAdvertsEndpoint;
-
-			[JsonIgnore] public string UserEndpoint;
-			
-			[JsonIgnore] public string UserActivityEndpoint;
-
-			[JsonIgnore] public string PlaytimeDefinitionEndpoint;
-
-			[JsonIgnore] public string PlaytimeEndpoint;
-
-			[JsonIgnore] public string ServerBundleEndpoint;
-
-			[JsonIgnore] public string BansEndpoint;
-
-			[JsonIgnore] public string WarningsEndpoint;
-
-			[JsonIgnore] public string GroupEndpoint;
-
-			[JsonIgnore] public string UserRewardsEndpoint;
-
-			[JsonIgnore] public string SendRewardsEndpoint;
+			[JsonIgnore] 
+			public string
+				ServerEndpoint,
+				FetchAdvertsEndpoint,
+				UserEndpoint,
+				UserActivityEndpoint,
+				PlaytimeDefinitionEndpoint, 
+				PlaytimeEndpoint,
+				ServerBundleEndpoint,
+				BansEndpoint,
+				WarningsEndpoint,
+				GroupEndpoint,
+				UserRewardsEndpoint,
+				SendRewardsEndpoint;
 
 			public void InitOrUpdate()
 			{
@@ -254,7 +254,8 @@ namespace Oxide.Plugins
 #if RUST
 			UnloadDashboardUIs();
 #endif
-
+			StopCoroutines();
+			
 			DisposeActiveRequests();
 
 			DestroyTimers();
@@ -274,21 +275,26 @@ namespace Oxide.Plugins
 		{
 			if (player == null) return;
 
-			TryAddToPlayTimes(player.Id);
-
-			GetOrCreateUser(player.Id, user =>
+			var playerID = player.Id;
+			if (string.IsNullOrEmpty(playerID)) return;
+			
+			TryAddToPlayTimes(playerID);
+			
+			GetOrCreateUser(playerID, user =>
 			{
+				if (user == null) return;
+				
 				GetUserRewards(user.ID, rewards =>
 				{
 					var reward = rewards.FirstOrDefault();
 					if (reward.Value != null && reward.Value.Count > 0)
-						_rewards[player.Id] = reward.Value;
+						_rewards[playerID] = reward.Value;
 
 					ExecuteReward(new List<string>
 					{
 						"CONNECT",
 						"SPAWN"
-					}, player.Id);
+					}, playerID);
 				});
 
 				SyncGroups(user);
@@ -338,46 +344,15 @@ namespace Oxide.Plugins
 
 		#endregion
 
-		#region Ban
-
-		private void OnUserBanned(string name, string id, string address, string reason)
-		{
-			_cachedBans.Add(id);
-
-			FetchVyHubBans(vyHubBans =>
-			{
-				if (!vyHubBans.ContainsKey(id))
-				{
-					Puts("Adding banned player to VyHub");
-					AddVyHubBan(id);
-				}
-			});
-		}
-
-		private void OnUserUnbanned(string name, string playerID, string ipAddress)
-		{
-			_cachedBans.Remove(playerID);
-
-			FetchVyHubBans(vyHubBans =>
-			{
-				if (vyHubBans.ContainsKey(playerID))
-				{
-					Puts("Removed banned player from VyHub");
-					UnbanVyHubUser(playerID);
-				}
-			});
-		}
-
-		#endregion
-
 		#region Permissions
 
 		private void OnUserGroupAdded(string id, string groupName)
 		{
 			var user = GetVyHubUser(id);
 			if (user == null) return;
-
-			if (_groupsBackLog.Remove(GetGroupBacklogKey(id, groupName, GroupOperation.add)) == false)
+			
+			var remove = _groupsBackLog.Remove(GetGroupBacklogKey(id, groupName, GroupOperation.add));
+			if (remove == false)
 				AddUserToVyHubGroup(user, groupName,
 					membership =>
 					{
@@ -520,7 +495,7 @@ namespace Oxide.Plugins
 			var targetPlayer = covalence.Players.FindPlayerById(args[0]);
 			if (targetPlayer == null || !targetPlayer.IsConnected)
 			{
-				player.Reply("The player must be online!");
+				player.Reply(Msg(player, ErrorPlayerOffline));
 				return;
 			}
 
@@ -1778,17 +1753,17 @@ namespace Oxide.Plugins
 		{
 			if (callback == null) return;
 
-			webrequest.Enqueue($"http://steamcommunity.com/profiles/{userId}?xml=1", null, (code, response) =>
+			SendWebRequest($"http://steamcommunity.com/profiles/{userId}?xml=1", null, (code, response) =>
 			{
 				if (code != 200 || response == null)
 					return;
 
-				var avatar = Regex.Match(response).Groups[1].ToString();
+				var avatar = Regex?.Match(response).Groups[1].ToString();
 				if (string.IsNullOrEmpty(avatar))
 					return;
 
 				callback.Invoke(avatar);
-			}, this);
+			});
 		}
 
 		#endregion
@@ -1966,7 +1941,7 @@ namespace Oxide.Plugins
 							return true;
 						}
 
-						PrintError("Failed to get user from VyHub API.");
+						PrintError($"Failed to get user {playerID} from VyHub API.");
 						return true;
 					}
 					
@@ -1974,13 +1949,22 @@ namespace Oxide.Plugins
 				});
 		}
 
-		private void CreateUser(string playerID, Action<VyHubUser> callback = null)
+		private void CreateUser(
+			string playerID,
+			Action<VyHubUser> callback = null)
 		{
-			SendWebRequestAndFetch(_config.API.UserEndpoint, new Dictionary<string, object>
-				{
-					["type"] = GameType,
-					["identifier"] = playerID
-				},
+			var body = new Dictionary<string, object>
+			{
+				["type"] = GameType,
+				["identifier"] = playerID
+			};
+
+			var player = covalence.Players.FindPlayerById(playerID);
+			if (player != null && !string.IsNullOrEmpty(player.Name)) 
+				body.TryAdd("username", player.Name);
+
+			SendWebRequestAndFetch(_config.API.UserEndpoint,
+				body,
 				"Failed to create user in VyHub API: {0}",
 				"VyHub User",
 				new Action<VyHubUser>(user =>
@@ -2244,7 +2228,7 @@ namespace Oxide.Plugins
 			});
 		}
 
-		private void UnbanVyHubUser(string playerID, Action<BanData> callback = null)
+		private bool UnbanVyHubUser(string playerID, Action<BanData> callback = null)
 		{
 			GetOrCreateUser(playerID, user =>
 			{
@@ -2254,6 +2238,8 @@ namespace Oxide.Plugins
 					"Ban",
 					callback, RequestMethod.PATCH);
 			});
+
+			return true;
 		}
 
 		private class BanData
@@ -2363,21 +2349,20 @@ namespace Oxide.Plugins
 			{
 				if (code == 403)
 				{
-					initiator.Reply(
-						"Insufficient permissions to perform this action. Please contact your administrator for assistance.");
+					initiator.Reply(Msg(initiator, PermissionErrorContactAdmin));
 					return;
 				}
 
-				initiator.Reply("Unsuccessful warning. Error message: " + response);
+				initiator.Reply(Msg(initiator, WarningErrorMessage, response));
 				return;
 			}
 
-			targetPlayer.Reply($"You have received a warning: {reason}");
-			targetPlayer.Reply("A warning notice has been sent to you.");
+			targetPlayer.Reply(Msg(targetPlayer, WarningReceived, reason));
+			targetPlayer.Reply(Msg(targetPlayer, WarningNoticeSent));
 
 			Log(LogType.INFO, $"[WARN] Warned user {targetPlayer.Name}: {reason}");
 
-			initiator.Reply($"Warning successfully issued to \"{targetPlayer.Name}\". Reason: \"{reason}\"");
+			initiator.Reply(Msg(initiator, WarningIssued, targetPlayer.Name, reason));
 
 			FetchVyHubBans(bans => SyncBans());
 		}
@@ -2519,16 +2504,8 @@ namespace Oxide.Plugins
 
 		private void FetchRewards(VyHubUser[] onlinePlayers)
 		{
-#if TESTING
-			SayDebug("[FetchRewards] init");
-#endif
-
 			var users = string.Join("&", onlinePlayers.Select(player => $"user_id={player.ID}"));
 			if (string.IsNullOrEmpty(users)) return;
-
-#if TESTING
-			SayDebug($"[FetchRewards] users={users}");
-#endif
 
 			SendWebRequestAndFetch(
 				_config.API.UserRewardsEndpoint + $"&serverbundle_id={_serverBundleID}&user_ids={users}",
@@ -2554,8 +2531,15 @@ namespace Oxide.Plugins
 
 		private void SendExecutedReward(string rewardID, Action<AppliedReward> callback = null)
 		{
+			var servers = new List<string>
+			{
+				_config.API.ServerID
+			};
+			
 			SendWebRequestAndFetch(_config.API.SendRewardsEndpoint + rewardID,
-				new Dictionary<string, object>(),
+				new Dictionary<string, object>{
+					["executed_on"] = JArray.FromObject(servers)
+				},
 				"Failed to send executed rewards to API: {0}",
 				"Executed rewards",
 				callback, RequestMethod.PATCH);
@@ -2689,22 +2673,14 @@ namespace Oxide.Plugins
 			bool ignoreCheck = false,
 			Func<string, int, bool> onResponse = null)
 		{
-			if (method == RequestMethod.PATCH)
-				WebPatchRequest(endpoint,
-					body,
-					errOnResponse,
-					$"Cannot fetch {fetchType} from VyHub API! Please follow the installation instructions.",
-					callback);
-			else
-			{
-				SendWebRequest(endpoint, body,
-					errOnResponse,
-					$"Cannot fetch {fetchType} from VyHub API! Please follow the installation instructions.",
-					callback, method, ignoreCheck, onResponse);
-			}
+			SendWebRequest(endpoint, body,
+				errOnResponse,
+				$"Cannot fetch {fetchType} from VyHub API! Please follow the installation instructions.",
+				callback, method, ignoreCheck, onResponse);
 		}
 		
-		private void SendWebRequest<T>(string endpoint, Dictionary<string, object> body,
+		private void SendWebRequest<T>(string endpoint, 
+			Dictionary<string, object> body,
 			string errOnResponse,
 			string errOnValue,
 			Action<T> callback = null,
@@ -2712,35 +2688,47 @@ namespace Oxide.Plugins
 			bool ignoreCheck = false,
 			Func<string, int, bool> onResponse = null)
 		{
-			SendWebRequest(endpoint, body, (code, response) =>
-			{
-				if (onResponse != null)
+			_coroutines.Add(Rust.Global.Runner.StartCoroutine(WebRequestAsync(endpoint,
+				body,
+				_config.API.Headers,
+				(response, code, err) =>
 				{
-					if (onResponse(response, code))
-						return;
-				}
-				else
-				{ 
-					if (IsBadResponse(response, code, errOnResponse)) 
-						return;
-				}
-				
+					if (onResponse != null)
+					{
+						if (onResponse(response, code))
+							return;
+					}
+					else
+					{
+						if (IsBadResponse(response, code, errOnResponse))
+						{
+							return;
+						}
+					}
 
-				var val = GetValueFrom<T>(response, errOnValue);
-				if (val != null || ignoreCheck)
-					callback?.Invoke(val);
-			}, method);
+					var val = GetValueFrom<T>(response, errOnValue);
+					if (val != null || ignoreCheck)
+					{
+						callback?.Invoke(val);
+					}
+				}, method)));
 		}
 
-		private void SendWebRequest(string endpoint, Dictionary<string, object> body, Action<int, string> callback,
+		private void SendWebRequest(string endpoint, 
+			Dictionary<string, object> body, 
+			Action<int, string> callback,
 			RequestMethod method = RequestMethod.GET)
 		{
-			webrequest.Enqueue(endpoint, body != null ? JsonConvert.SerializeObject(body) : null, (code,
-					result) =>
+			_coroutines.Add(Rust.Global.Runner.StartCoroutine(WebRequestAsync(endpoint,
+				body,
+				_config.API.Headers,
+				(response, code, err) =>
 				{
-					callback?.Invoke(code, result);
-				}, this,
-				method, _config.API.Headers);
+					if (!string.IsNullOrEmpty(err))
+						return;
+					
+					callback?.Invoke(code, response);
+				}, method)));
 		}
 
 		private bool IsBadResponse(string response, int code, string msg)
@@ -2765,50 +2753,100 @@ namespace Oxide.Plugins
 			return obj;
 		}
 
-		private void WebPatchRequest<T>(string url,
+		private void WebRequest<T>(string url,
 			Dictionary<string, object> body,
 			string errOnResponse,
 			string errOnValue,
-			Action<T> callback = null)
+			Action<T> callback = null,
+			RequestMethod method = RequestMethod.GET)
 		{
-			Rust.Global.Runner.StartCoroutine(WebPatchRequestAsync(url,
+			_coroutines.Add(Rust.Global.Runner.StartCoroutine(WebRequestAsync(url,
 				body,
 				_config.API.Headers,
-				err => PrintError(errOnResponse, err),
-				result =>
+				(result, code, err) =>
 				{
+					if (!string.IsNullOrEmpty(err))
+					{
+						PrintError(errOnResponse, err);
+						return;
+					}
+					
 					var val = GetValueFrom<T>(result, errOnValue);
 					if (val != null)
 						callback?.Invoke(val);
-				}));
+				}, method)));
 		}
 
-		private IEnumerator WebPatchRequestAsync(string url,
+		private IEnumerator WebRequestAsync(
+			string url,
 			Dictionary<string, object> requestBody,
 			Dictionary<string, string> headers,
-			Action<string> onDeleteRequestError,
-			Action<string> onDeleteRequestSuccess)
+			Action<string, int, string> onRequestComplete = null,
+			RequestMethod method = RequestMethod.GET)
 		{
-			var webRequest = UnityWebRequest.Put(url, JsonConvert.SerializeObject(requestBody));
-			webRequest.method = "PATCH";
-
-			_activeRequests.Add(webRequest);
-
-			foreach (var check in headers)
-				webRequest.SetRequestHeader(check.Key, check.Value);
-
-			yield return webRequest.SendWebRequest();
-
-			if (webRequest.isNetworkError || webRequest.isHttpError)
+			using (var webRequest = GetUnityWebRequest(url, requestBody, method))
 			{
-				onDeleteRequestError?.Invoke(webRequest.error);
-			}
-			else
-			{
-				if (webRequest.isDone) onDeleteRequestSuccess?.Invoke(webRequest.downloadHandler.text);
-			}
+				_activeRequests.Add(webRequest);
 
-			_activeRequests.Remove(webRequest);
+				foreach (var check in headers)
+					webRequest.SetRequestHeader(check.Key, check.Value);
+
+				yield return webRequest.SendWebRequest();
+			
+				if (webRequest.downloadHandler != null)
+				{
+					onRequestComplete?.Invoke(webRequest.downloadHandler.text, (int)webRequest.responseCode, webRequest.error);
+				}
+
+				_activeRequests.Remove(webRequest);
+			}
+		}
+
+		private UnityWebRequest GetUnityWebRequest(string url, Dictionary<string, object> requestBody, RequestMethod method)
+		{
+			switch (method)
+			{
+				case RequestMethod.GET:
+				{
+					return UnityWebRequest.Get(url);
+					
+				}
+				
+				case RequestMethod.DELETE:
+				{
+					return UnityWebRequest.Delete(url);
+				}
+				
+				default:
+				{
+					var bodyData = JsonConvert.SerializeObject(requestBody);
+
+					switch (method)
+					{
+						case RequestMethod.PATCH:
+						{
+							var webRequest = UnityWebRequest.Put(url, bodyData);
+							webRequest.method = "PATCH";
+							return webRequest;
+						}
+
+						case RequestMethod.PUT:
+						{
+							return UnityWebRequest.Put(url, bodyData);
+						}
+
+						case RequestMethod.POST:
+						{
+							var webRequest = UnityWebRequest.Put(url, bodyData);
+							webRequest.method = "POST";
+							return webRequest;
+						}
+						
+						default:
+							throw new ArgumentOutOfRangeException(nameof(method), method, null);
+					}
+				}
+			}
 		}
 
 		private void DisposeActiveRequests()
@@ -3032,22 +3070,28 @@ namespace Oxide.Plugins
 
 		private void SyncBans()
 		{
-			var serverBans = GetServerBans();
-			var fetchedVyHubBans = _vyHubBans;
-			var vyHubBans = fetchedVyHubBans.Keys;
+			var bannedGamePlayers = GetServerBans();
+
+			var bannedVyHubPlayers = _vyHubBans.Keys;
+
+#if TESTING
+			Puts($"[SyncBans] banned Game Players: {string.Join(", ", bannedGamePlayers)}");
+			Puts($"[SyncBans] banned VyHub Players: {string.Join(", ", bannedVyHubPlayers)}");
+#endif
 
 			// All game bans, that do not exist on VyHub
-			var bannedGamePlayersDiff = new HashSet<string>(serverBans);
-			bannedGamePlayersDiff.RemoveWhere(x => vyHubBans.Contains(x));
+			var bannedGamePlayersDiff = new HashSet<string>(bannedGamePlayers);
+			bannedGamePlayersDiff.RemoveWhere(x => bannedVyHubPlayers.Contains(x));
 
+			
 			// All VyHub bans, that do not exist on game server
-			var bannedVyHubPlayersDiff = new HashSet<string>(vyHubBans);
-			bannedVyHubPlayersDiff.RemoveWhere(x => serverBans.Contains(x));
+			var bannedVyHubPlayersDiff = new HashSet<string>(bannedVyHubPlayers);
+			bannedVyHubPlayersDiff.RemoveWhere(x => bannedGamePlayers.Contains(x));
 
 			// All bans that game server and VyHub have in common
-			var bannedPlayersIntersect = new HashSet<string>(vyHubBans);
-			bannedPlayersIntersect.IntersectWith(serverBans);
-
+			var bannedPlayersIntersect = new HashSet<string>(bannedVyHubPlayers);
+			bannedPlayersIntersect.IntersectWith(bannedGamePlayers);
+			
 			// Check for bans missing on VyHub
 			foreach (var playerID in bannedGamePlayersDiff)
 				if (_cachedBans.Contains(playerID))
@@ -3055,16 +3099,18 @@ namespace Oxide.Plugins
 					// Unbanned on VyHub
 					Puts($"Unbanning game ban for player {playerID}. (Unbanned on VyHub)");
 
-					if (UnbanGameBan(playerID)) _cachedBans.Remove(playerID);
+					_cachedBans.Remove(playerID);
+					UnBanGameBan(playerID);
 				}
 				else
 				{
 					// Missing on VyHub
 					Puts($"Adding VyHub ban for player {playerID} from game. (Banned on game server)");
 
-					AddVyHubBan(playerID, ban => _cachedBans.Add(playerID));
+					_cachedBans.Add(playerID);
+					AddVyHubBan(playerID);
 				}
-
+			
 			// Checks for bans missing on game server
 			foreach (var playerID in bannedVyHubPlayersDiff)
 				if (_cachedBans.Contains(playerID))
@@ -3072,7 +3118,8 @@ namespace Oxide.Plugins
 					// Unbanned on Game Server
 					Puts($"Unbanning VyHub ban for player {playerID}. (Unbanned on game server)");
 
-					UnbanVyHubUser(playerID, result => _cachedBans.Remove(playerID));
+					_cachedBans.Remove(playerID);
+					UnbanVyHubUser(playerID);
 				}
 				else
 				{
@@ -3080,10 +3127,14 @@ namespace Oxide.Plugins
 					Puts($"Adding game ban for player {playerID} from VyHub. (Banned on VyHub)");
 
 					List<BanData> bans;
-					if (fetchedVyHubBans.TryGetValue(playerID, out bans) && AddGameBan(playerID, bans[0]))
+					if (_vyHubBans.TryGetValue(playerID, out bans))
+					{
 						_cachedBans.Add(playerID);
+						
+						AddGameBan(playerID, bans[0]);
+					}
 				}
-
+			
 			foreach (var playerID in bannedPlayersIntersect)
 				_cachedBans.Add(playerID);
 		}
@@ -3109,63 +3160,103 @@ namespace Oxide.Plugins
 
 		private List<string> GetServerBans()
 		{
+#if RUST
+			return ServerUsers.GetAll(ServerUsers.UserGroup.Banned).Select(user => user.steamid.ToString()).ToList();
+#else
 			var list = new List<string>();
-
+			
 			foreach (var player in covalence.Players.All)
 				if (player.IsBanned)
 					list.Add(player.Id);
-
+			
 			return list;
+#endif
 		}
 
-		private bool AddGameBan(string playerID, BanData ban)
+		private void AddGameBan(string playerID, BanData ban)
 		{
+			if (server.IsBanned(playerID)) return;
+
 			var banReason = ban.Reason;
 			if (string.IsNullOrEmpty(banReason))
 				banReason = "no reason";
 
-			var player = covalence.Players.FindPlayerById(playerID);
-			if (player != null)
+			var playerName = string.Empty;
+			
+#if RUST
+			var expiry = ban.EndsOn.HasValue
+				? Convert.ToInt64(ban.EndsOn.Value.ToUniversalTime().Subtract(DateTime.UtcNow).TotalSeconds) + Epoch.Current
+				: -1L;
+
+			var userID = Convert.ToUInt64(playerID);
+			if (userID < 70000000000000000UL) return;
+
+			BasePlayer player;
+			if (BasePlayer.TryFindByID(userID, out player) && player.IsConnected)
 			{
-				if (ban.EndsOn.HasValue) 
-					player.Ban(ban.Reason, ban.EndsOn.Value.ToUniversalTime().Subtract(DateTime.UtcNow));
-				else
-					player.Ban(ban.Reason);
+				playerName = player.displayName ?? "Unknown";
+				
+				BanPlayer(player.userID, banReason, playerName, expiry);
+
+				player.Kick(banReason);
 			}
 			else
 			{
-				var userID = Convert.ToUInt64(playerID);
-				if (userID < 70000000000000000UL) return false;
-				
-				var expiry = Convert.ToInt64(ban.EndsOn?.ToUniversalTime().Subtract(DateTime.UtcNow).TotalSeconds);
-				if (expiry > 0)
-					ServerUsers.Set(userID, ServerUsers.UserGroup.Banned, "unnamed", banReason, expiry);
-				else
-					ServerUsers.Set(userID, ServerUsers.UserGroup.Banned, "unnamed", banReason);
+				BanPlayer(userID, banReason, "Unknown", expiry);
 			}
+#else
+			var duration = ban.EndsOn.HasValue
+				? ban.EndsOn.Value.ToUniversalTime().Subtract(DateTime.UtcNow)
+				: default(TimeSpan);
 			
+			server.Ban(playerID, banReason, duration);
+#endif
+
+			if (_config.NotifyChatOnUserBlocked)
+			{
+				if (string.IsNullOrEmpty(playerName)) 
+					playerName = ban.User?.Username ?? playerID;
+				
+				Broadcast(BanMessage, playerName, banReason);
+			}
+		}
+
+		private static void BanPlayer(ulong userID, string displayName, string banReason, long expiry)
+		{
+			ServerUsers.Set(userID, ServerUsers.UserGroup.Banned, displayName, banReason, expiry);
+			ServerUsers.Save();
+		}
+
+		private bool UnBanGameBan(string playerID)
+		{
+			server.Unban(playerID);
 			return true;
 		}
 
-		private bool UnbanGameBan(string playerID)
+		private bool AddVyHubBan(string playerID, Action<BanData> callback = null)
 		{
 			var player = covalence.Players.FindPlayerById(playerID);
 			if (player == null) return false;
 
-			player.Unban();
-			return true;
-		}
-
-		private void AddVyHubBan(string playerID, Action<BanData> callback = null)
-		{
-			var player = covalence.Players.FindPlayerById(playerID);
-			if (player == null) return;
-
+			long expiry;
+			string banReason;
+			
+#if RUST
 			var serverUser = ServerUsers.Get(Convert.ToUInt64(playerID));
-			if (serverUser == null) return;
+			if (serverUser == null) return false;
 
-			CreateVyHubBanWithoutCreator(serverUser.expiry > 0 ? serverUser.expiry : (long?) null, serverUser.notes, playerID,
+			expiry = serverUser.expiry;
+			
+			banReason = serverUser.notes;
+#else
+			expiry = (long) player.BanTimeRemaining.TotalSeconds;
+			
+			banReason = string.Empty;
+#endif
+			
+			CreateVyHubBanWithoutCreator(expiry > 0 ? expiry : (long?) null, banReason, playerID,
 				DateTime.UtcNow, callback);
+			return true;
 		}
 
 		#endregion
@@ -3199,13 +3290,10 @@ namespace Oxide.Plugins
 				foreach (var mapping in group.Mappings)
 				{
 					allGroups.Add(mapping.Name.ToLower());
-
-					if (!permission.GroupExists(group.Name))
-						permission.CreateGroup(mapping.Name.ToLower(), mapping.Name, group.PermissionLevel);
 				}
 
 				AddPlayerToGameGroup(allGroups, user.Identifier);
-
+				
 				allGroups.Clear();
 			});
 		}
@@ -3220,17 +3308,16 @@ namespace Oxide.Plugins
 			foreach (var group in groups)
 				if (permission.GroupExists(group) && !permission.UserHasGroup(playerID, group))
 				{
-					permission.AddUserGroup(playerID, group);
-
 					_groupsBackLog.Add(GetGroupBacklogKey(playerID, group, GroupOperation.add));
+
+					permission.AddUserGroup(playerID, group);
 				}
 
 			foreach (var group in permission.GetUserGroups(playerID))
 				if (!groups.Contains(group) && _vyHubGroups.ContainsKey(group))
 				{
-#if TESTING
-					SayDebug($"[AddPlayerToGameGroup] group to remove: {group}");
-#endif
+					_groupsBackLog.Add(GetGroupBacklogKey(playerID, group, GroupOperation.remove));
+					
 					permission.RemoveUserGroup(playerID, group);
 				}
 		}
@@ -3310,7 +3397,9 @@ namespace Oxide.Plugins
 
 							if (!string.IsNullOrEmpty(command))
 								foreach (var cmd in command.Split('|'))
+								{
 									server.Command(cmd);
+								}
 						}
 						else
 						{
@@ -3319,7 +3408,8 @@ namespace Oxide.Plugins
 							Log(LogType.WARNING, $"No implementation for Reward Type: {reward.Type}");
 						}
 
-						if (reward.Once) SetExecutedReward(appliedReward.ID);
+						if (reward.Once) 
+							SetExecutedReward(appliedReward.ID);
 
 						if (success)
 							Log(LogType.INFO,
@@ -3351,7 +3441,7 @@ namespace Oxide.Plugins
 
 		private void SendExecutedRewards()
 		{
-			Rust.Global.Runner.StartCoroutine(AsyncExecutedRewards());
+			_coroutines.Add(Rust.Global.Runner.StartCoroutine(AsyncExecutedRewards()));
 		}
 
 		private IEnumerator AsyncExecutedRewards()
@@ -3419,10 +3509,16 @@ namespace Oxide.Plugins
 #endif
 		}
 
-		public List<T> SkipAndTake<T>(ref List<T> source, int skip, int take)
+		private void StopCoroutines()
 		{
-			var index = Mathf.Min(Mathf.Max(skip, 0), source.Count);
-			return source.GetRange(index, Mathf.Min(take, source.Count - index));
+			while (_coroutines.Count > 0)
+			{
+				var coroutine = _coroutines[0];
+				if (coroutine != null) 
+					Rust.Global.Runner.StopCoroutine(coroutine);
+				
+				_coroutines.RemoveAt(0);
+			}
 		}
 		
 		#endregion
@@ -3464,6 +3560,47 @@ namespace Oxide.Plugins
 		private void SaveObjectToData(string name, object obj)
 		{
 			Interface.Oxide.DataFileSystem.WriteObject($"{Name}/{name}", obj);
+		}
+		
+		#endregion
+
+		#region Lang
+
+		private const string
+			PermissionErrorContactAdmin = "PermissionErrorContactAdmin",
+			WarningErrorMessage = "WarningErrorMessage",
+			WarningReceived = "WarningReceived",
+			WarningNoticeSent = "WarningNoticeSent",
+			WarningIssued = "WarningIssued",
+			ErrorPlayerOffline = "ErrorPlayerOffline",
+			BanMessage = "BanMessage";
+
+		protected override void LoadDefaultMessages()
+		{
+			lang.RegisterMessages(new Dictionary<string, string>
+			{
+				[PermissionErrorContactAdmin] = "Insufficient permissions to perform this action. Please contact your administrator for assistance.",
+				[WarningErrorMessage] = "Unsuccessful warning. Error message: {0}",
+				[WarningReceived] = "You have received a warning: {0}",
+				[WarningNoticeSent] = "A warning notice has been sent to you.",
+				[WarningIssued] = "Warning successfully issued to \"{0}\". Reason: \"{1}\"",
+				[ErrorPlayerOffline] = "The player must be online!",
+				[BanMessage] = "\"{0}\" was banned for \"{1}\""
+			}, this);
+		}
+
+		private string Msg(string key, string userid = null, params object[] obj) =>
+			string.Format(lang.GetMessage(key, this, userid), obj);
+
+		private string Msg(IPlayer player, string key, params object[] obj)
+		{
+			return string.Format(lang.GetMessage(key, this, player.Id), obj);
+		}
+
+		private void Broadcast(string key, params object[] obj)
+		{
+			foreach (var member in covalence.Players.Connected) 
+				member.Reply(Msg(member, key, obj));
 		}
 		
 		#endregion
