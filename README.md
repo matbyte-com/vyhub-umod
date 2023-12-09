@@ -1,16 +1,26 @@
-# Rust / 7 Days to Die Community-Management / Donation-System
+We make your job as an admin easier by covering every aspect of managing your server and community with our service.
+Key features are:
 
-This is the [VyHub](https://vyhub.net) addon for Rust and 7 Days to die.
+- Shop system (unlimited categories, server and package options)
+- Over 20 payment integrations (PayPal, Paysafecard, Stripe, ...)
+- Gift function
+- Website for your community
+- Discord roles and notifications
+- Ban and warning system
+- Synchronization of groups/ranks
+- Ticketing system
+- Available in multiple languages
+- Forum (as a paid add-on)
+- Quick support
+- Complete API
 
-## Features
-- :shopping_cart:	Shop / donation system -> sell items on your gameserver for real money
-- :no_entry_sign:	 Bans
-- :warning:	 Warnings
-- :framed_picture: Ingame dashboard of bans and warnings
-- :repeat:  Synchronize player groups with admin mods
-- :chart_with_upwards_trend:	Playtime statistics
-- :loudspeaker:	 Periodic adverts
 
-Create your account for free on our [website](https://vyhub.net).
+The plugin connects your [VyHub](https://vyhub.net) store to your Rust server. It checks if a player has made a purchase on your VyHub store and delivers the order such as items, skins or ranks by typing commands in the server console. It also synchronizes player roles, warnings, and bans.
 
-The documentation can be found [here](https://docs.vyhub.net/latest/game/umod/).
+Registration is free; we only charge a commission of 3-5% on shop revenue.
+
+The full documentation can be found [here](https://docs.vyhub.net).
+
+Also, check out our [website](https://vyhub.net) or the [demo](https://demo.vyhub.net). 
+
+For direct contact with the team, feel free to join our [Discord](https://discord.com/invite/QycQpd2AQP)!
