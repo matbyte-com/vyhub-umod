@@ -15,21 +15,13 @@ using Oxide.Core.Libraries.Covalence;
 using UnityEngine;
 using UnityEngine.Networking;
 using Time = UnityEngine.Time;
-
-#if RUST
-using System.Text.RegularExpressions;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
-using Facepunch.Math;
-using Oxide.Core.Plugins;
-using Oxide.Game.Rust.Cui;
-using Oxide.Game.Rust.Libraries.Covalence;
-#endif
 
 namespace Oxide.Plugins
 {
-	[Info("VyHub", "VyHub", "1.3.9")]
+	[Info("VyHub", "VyHub", "1.3.10")]
 	[Description(
 		"VyHub plugin to manage and monetize your Rust / 7 Days to Die server. You can create your webstore for free with VyHub!")]
 	public class VyHub : CovalencePlugin
@@ -234,8 +226,10 @@ namespace Oxide.Plugins
 
 #if RUST
 			InitColors();
+#else
+			InitWebEngine();
 #endif
-
+			
 			GetServerInformation(() =>
 			{
 				GetPlaytimeDefinition(() =>
@@ -253,6 +247,8 @@ namespace Oxide.Plugins
 		{
 #if RUST
 			UnloadDashboardUIs();
+#else
+			DestroyWebEngine();
 #endif
 			StopCoroutines();
 			
@@ -510,7 +506,7 @@ namespace Oxide.Plugins
 
 		#region Fields
 
-		[PluginReference] private Plugin ImageLibrary = null;
+		[PluginReference] private Oxide.Core.Plugins.Plugin ImageLibrary = null;
 
 		private enum DashboardTab
 		{
@@ -608,7 +604,7 @@ namespace Oxide.Plugins
 		private void DashboardUI(BasePlayer player, DashboardTab selectedTab = DashboardTab.Players, int page = 0,
 			string search = "", bool first = false)
 		{
-			var container = new CuiElementContainer();
+			var container = new Oxide.Game.Rust.Cui.CuiElementContainer();
 
 			float xSwitch;
 			float ySwitch;
@@ -618,7 +614,7 @@ namespace Oxide.Plugins
 
 			if (first)
 			{
-				container.Add(new CuiPanel
+				container.Add(new Oxide.Game.Rust.Cui.CuiPanel
 				{
 					RectTransform = {AnchorMin = "0 0", AnchorMax = "1 1"},
 					Image =
@@ -629,7 +625,7 @@ namespace Oxide.Plugins
 					CursorEnabled = true
 				}, "Overlay", DashboardLayer + ".Background", DashboardLayer + ".Background");
 
-				container.Add(new CuiButton
+				container.Add(new Oxide.Game.Rust.Cui.CuiButton
 				{
 					RectTransform = {AnchorMin = "0 0", AnchorMax = "1 1"},
 					Text = {Text = ""},
@@ -640,7 +636,7 @@ namespace Oxide.Plugins
 					}
 				}, DashboardLayer + ".Background");
 
-				container.Add(new CuiPanel()
+				container.Add(new Oxide.Game.Rust.Cui.CuiPanel()
 				{
 					RectTransform =
 					{
@@ -659,7 +655,7 @@ namespace Oxide.Plugins
 
 			#region Main
 
-			container.Add(new CuiPanel()
+			container.Add(new Oxide.Game.Rust.Cui.CuiPanel()
 			{
 				RectTransform = {AnchorMin = "0 0", AnchorMax = "1 1"},
 				Image =
@@ -672,7 +668,7 @@ namespace Oxide.Plugins
 
 			#region Header
 
-			container.Add(new CuiPanel
+			container.Add(new Oxide.Game.Rust.Cui.CuiPanel
 			{
 				RectTransform =
 				{
@@ -683,7 +679,7 @@ namespace Oxide.Plugins
 				Image = {Color = _color2}
 			}, DashboardMainLayer, DashboardMainLayer + ".Header");
 
-			container.Add(new CuiLabel
+			container.Add(new Oxide.Game.Rust.Cui.CuiLabel
 			{
 				RectTransform =
 				{
@@ -705,7 +701,7 @@ namespace Oxide.Plugins
 
 			#region Close
 
-			container.Add(new CuiButton
+			container.Add(new Oxide.Game.Rust.Cui.CuiButton
 			{
 				RectTransform =
 				{
@@ -734,7 +730,7 @@ namespace Oxide.Plugins
 
 			#region Tabs
 
-			container.Add(new CuiPanel()
+			container.Add(new Oxide.Game.Rust.Cui.CuiPanel()
 			{
 				RectTransform =
 				{
@@ -756,7 +752,7 @@ namespace Oxide.Plugins
 
 				if (isSelectedTab)
 				{
-					container.Add(new CuiPanel()
+					container.Add(new Oxide.Game.Rust.Cui.CuiPanel()
 						{
 							RectTransform =
 							{
@@ -770,7 +766,7 @@ namespace Oxide.Plugins
 							}
 						}, DashboardMainLayer + ".Tabs", DashboardMainLayer + $".Tab.{targetTab}");
 
-					container.Add(new CuiPanel()
+					container.Add(new Oxide.Game.Rust.Cui.CuiPanel()
 						{
 							RectTransform =
 							{
@@ -784,7 +780,7 @@ namespace Oxide.Plugins
 							}
 						}, DashboardMainLayer + $".Tab.{targetTab}");
 
-					container.Add(new CuiButton()
+					container.Add(new Oxide.Game.Rust.Cui.CuiButton()
 						{
 							RectTransform =
 							{
@@ -809,7 +805,7 @@ namespace Oxide.Plugins
 				}
 				else
 				{
-					container.Add(new CuiButton()
+					container.Add(new Oxide.Game.Rust.Cui.CuiButton()
 						{
 							RectTransform =
 							{
@@ -849,7 +845,7 @@ namespace Oxide.Plugins
 
 					#region Next Page
 
-					container.Add(new CuiButton
+					container.Add(new Oxide.Game.Rust.Cui.CuiButton
 					{
 						RectTransform =
 						{
@@ -880,7 +876,7 @@ namespace Oxide.Plugins
 
 					#region Back Page
 
-					container.Add(new CuiButton
+					container.Add(new Oxide.Game.Rust.Cui.CuiButton
 					{
 						RectTransform =
 						{
@@ -911,7 +907,7 @@ namespace Oxide.Plugins
 
 					#region Search
 
-					container.Add(new CuiPanel()
+					container.Add(new Oxide.Game.Rust.Cui.CuiPanel()
 					{
 						RectTransform =
 						{
@@ -925,12 +921,12 @@ namespace Oxide.Plugins
 						}
 					}, DashboardMainLayer + ".Header", DashboardMainLayer + ".Header.Search");
 
-					container.Add(new CuiElement()
+					container.Add(new Oxide.Game.Rust.Cui.CuiElement()
 					{
 						Parent = DashboardMainLayer + ".Header.Search",
 						Components =
 						{
-							new CuiInputFieldComponent()
+							new Oxide.Game.Rust.Cui.CuiInputFieldComponent()
 							{
 								FontSize = 12,
 								Align = TextAnchor.MiddleLeft,
@@ -940,7 +936,7 @@ namespace Oxide.Plugins
 								Text = !string.IsNullOrWhiteSpace(search) ? $"{search}" : "Search...",
 								NeedsKeyboard = true
 							},
-							new CuiRectTransformComponent()
+							new Oxide.Game.Rust.Cui.CuiRectTransformComponent()
 							{
 								AnchorMin = "0 0", AnchorMax = "1 1",
 								OffsetMin = "5 0", OffsetMax = "-5 0"
@@ -949,7 +945,7 @@ namespace Oxide.Plugins
 					});
 
 					if (HasSearch(search))
-						container.Add(new CuiButton()
+						container.Add(new Oxide.Game.Rust.Cui.CuiButton()
 						{
 							RectTransform =
 							{
@@ -989,7 +985,7 @@ namespace Oxide.Plugins
 
 						#region Background
 
-						container.Add(new CuiPanel()
+						container.Add(new Oxide.Game.Rust.Cui.CuiPanel()
 							{
 								RectTransform =
 								{
@@ -1007,16 +1003,16 @@ namespace Oxide.Plugins
 
 						#region Avatar
 
-						container.Add(new CuiElement()
+						container.Add(new Oxide.Game.Rust.Cui.CuiElement()
 						{
 							Parent = DashboardMainLayer + $".Content.Player.{index}",
 							Components =
 							{
-								new CuiRawImageComponent
+								new Oxide.Game.Rust.Cui.CuiRawImageComponent
 								{
 									Png = ImageLibrary.Call<string>("GetImage", $"avatar_{member.UserIDString}")
 								},
-								new CuiRectTransformComponent
+								new Oxide.Game.Rust.Cui.CuiRectTransformComponent
 								{
 									AnchorMin = "0 0", AnchorMax = "0 1",
 									OffsetMin = "0 0",
@@ -1029,7 +1025,7 @@ namespace Oxide.Plugins
 
 						#region Name&SteamID
 
-						container.Add(new CuiLabel()
+						container.Add(new Oxide.Game.Rust.Cui.CuiLabel()
 							{
 								RectTransform =
 								{
@@ -1047,7 +1043,7 @@ namespace Oxide.Plugins
 								}
 							}, DashboardMainLayer + $".Content.Player.{index}");
 
-						container.Add(new CuiLabel()
+						container.Add(new Oxide.Game.Rust.Cui.CuiLabel()
 							{
 								RectTransform =
 								{
@@ -1071,7 +1067,7 @@ namespace Oxide.Plugins
 
 						localSwitch = -5;
 
-						container.Add(new CuiButton()
+						container.Add(new Oxide.Game.Rust.Cui.CuiButton()
 							{
 								RectTransform =
 								{
@@ -1101,7 +1097,7 @@ namespace Oxide.Plugins
 						localSwitch = localSwitch - DASHBOARD_TABLE_PLAYERS_BTN_WIDTH -
 						              DASHBOARD_TABLE_PLAYERS_BTN_MARGIN;
 
-						container.Add(new CuiButton()
+						container.Add(new Oxide.Game.Rust.Cui.CuiButton()
 							{
 								RectTransform =
 								{
@@ -1152,12 +1148,12 @@ namespace Oxide.Plugins
 
 			#endregion
 
-			CuiHelper.AddUi(player, container);
+			Oxide.Game.Rust.Cui.CuiHelper.AddUi(player, container);
 		}
 
 		private void ConfirmActionUI(BasePlayer player, string action, string targetName, ulong targetID)
 		{
-			var container = new CuiElementContainer();
+			var container = new Oxide.Game.Rust.Cui.CuiElementContainer();
 
 			var confirm = GetOrAddConfirmData(player);
 
@@ -1166,7 +1162,7 @@ namespace Oxide.Plugins
 
 			#region Background
 
-			container.Add(new CuiPanel()
+			container.Add(new Oxide.Game.Rust.Cui.CuiPanel()
 			{
 				RectTransform = {AnchorMin = "0 0", AnchorMax = "1 1"},
 				Image =
@@ -1177,7 +1173,7 @@ namespace Oxide.Plugins
 				CursorEnabled = true
 			}, "Overlay", DashboardConfirmLayer, DashboardConfirmLayer);
 
-			container.Add(new CuiButton
+			container.Add(new Oxide.Game.Rust.Cui.CuiButton
 			{
 				RectTransform = {AnchorMin = "0 0", AnchorMax = "1 1"},
 				Text = {Text = ""},
@@ -1195,7 +1191,7 @@ namespace Oxide.Plugins
 
 			var mainHeight = action == DASHBOARD_ACTION_BAN ? DASHBOARD_CONFIRM_BANS_HEIGHT : DASHBOARD_CONFIRM_HEIGHT;
 
-			container.Add(new CuiPanel()
+			container.Add(new Oxide.Game.Rust.Cui.CuiPanel()
 			{
 				RectTransform =
 				{
@@ -1214,7 +1210,7 @@ namespace Oxide.Plugins
 
 			#region Header
 
-			container.Add(new CuiPanel()
+			container.Add(new Oxide.Game.Rust.Cui.CuiPanel()
 			{
 				RectTransform =
 				{
@@ -1227,7 +1223,7 @@ namespace Oxide.Plugins
 				}
 			}, DashboardConfirmMainLayer, DashboardConfirmMainLayer + ".Header");
 
-			container.Add(new CuiLabel
+			container.Add(new Oxide.Game.Rust.Cui.CuiLabel
 			{
 				RectTransform =
 				{
@@ -1245,7 +1241,7 @@ namespace Oxide.Plugins
 				}
 			}, DashboardConfirmMainLayer + ".Header");
 
-			container.Add(new CuiButton
+			container.Add(new Oxide.Game.Rust.Cui.CuiButton
 			{
 				RectTransform =
 				{
@@ -1276,7 +1272,7 @@ namespace Oxide.Plugins
 
 			#region Message
 
-			container.Add(new CuiPanel()
+			container.Add(new Oxide.Game.Rust.Cui.CuiPanel()
 			{
 				RectTransform =
 				{
@@ -1291,7 +1287,7 @@ namespace Oxide.Plugins
 				}
 			}, DashboardConfirmMainLayer, DashboardConfirmMainLayer + ".Message");
 
-			container.Add(new CuiLabel()
+			container.Add(new Oxide.Game.Rust.Cui.CuiLabel()
 			{
 				RectTransform = {AnchorMin = "0 0", AnchorMax = "1 1"},
 				Text =
@@ -1333,7 +1329,7 @@ namespace Oxide.Plugins
 			ySwitch = ySwitch - height - 10f;
 			height = 40;
 
-			container.Add(new CuiPanel
+			container.Add(new Oxide.Game.Rust.Cui.CuiPanel
 			{
 				RectTransform =
 				{
@@ -1348,7 +1344,7 @@ namespace Oxide.Plugins
 
 			#region Cancel
 
-			container.Add(new CuiButton()
+			container.Add(new Oxide.Game.Rust.Cui.CuiButton()
 			{
 				RectTransform =
 				{
@@ -1375,7 +1371,7 @@ namespace Oxide.Plugins
 
 			#region Accept
 
-			container.Add(new CuiButton()
+			container.Add(new Oxide.Game.Rust.Cui.CuiButton()
 			{
 				RectTransform =
 				{
@@ -1402,13 +1398,13 @@ namespace Oxide.Plugins
 
 			#endregion
 
-			CuiHelper.AddUi(player, container);
+			Oxide.Game.Rust.Cui.CuiHelper.AddUi(player, container);
 		}
 
-		private void EnterFieldUI(ref CuiElementContainer container, ref float ySwitch, ref float height,
+		private void EnterFieldUI(ref Oxide.Game.Rust.Cui.CuiElementContainer container, ref float ySwitch, ref float height,
 			ConfirmData confirm, string type)
 		{
-			container.Add(new CuiPanel()
+			container.Add(new Oxide.Game.Rust.Cui.CuiPanel()
 				{
 					RectTransform =
 					{
@@ -1434,7 +1430,7 @@ namespace Oxide.Plugins
 					break;
 			}
 
-			container.Add(new CuiLabel()
+			container.Add(new Oxide.Game.Rust.Cui.CuiLabel()
 				{
 					RectTransform =
 					{
@@ -1452,7 +1448,7 @@ namespace Oxide.Plugins
 					}
 				}, DashboardConfirmMainLayer + $".{type}");
 
-			container.Add(new CuiPanel()
+			container.Add(new Oxide.Game.Rust.Cui.CuiPanel()
 				{
 					RectTransform =
 					{
@@ -1468,12 +1464,12 @@ namespace Oxide.Plugins
 
 			var param = type == "reason" ? confirm.Reason : confirm.Duration;
 
-			container.Add(new CuiElement
+			container.Add(new Oxide.Game.Rust.Cui.CuiElement
 			{
 				Parent = DashboardConfirmMainLayer + $".{type}.Enter",
 				Components =
 				{
-					new CuiInputFieldComponent
+					new Oxide.Game.Rust.Cui.CuiInputFieldComponent
 					{
 						FontSize = 10,
 						Align = TextAnchor.MiddleLeft,
@@ -1483,7 +1479,7 @@ namespace Oxide.Plugins
 						Text = !string.IsNullOrWhiteSpace(param) ? $"{param}" : string.Empty,
 						NeedsKeyboard = true
 					},
-					new CuiRectTransformComponent
+					new Oxide.Game.Rust.Cui.CuiRectTransformComponent
 					{
 						AnchorMin = "0 0", AnchorMax = "1 1",
 						OffsetMin = "10 0", OffsetMax = "0 0"
@@ -1747,7 +1743,7 @@ namespace Oxide.Plugins
 
 		#region Avatar
 		
-		private readonly Regex Regex = new Regex(@"<avatarFull><!\[CDATA\[(.*)\]\]></avatarFull>");
+		private readonly System.Text.RegularExpressions.Regex Regex = new System.Text.RegularExpressions.Regex(@"<avatarFull><!\[CDATA\[(.*)\]\]></avatarFull>");
 
 		private void GetAvatar(string userId, Action<string> callback)
 		{
@@ -1809,8 +1805,8 @@ namespace Oxide.Plugins
 
 		private void UnloadDashboardUI(BasePlayer player)
 		{
-			CuiHelper.DestroyUi(player, DashboardLayer + ".Background");
-			CuiHelper.DestroyUi(player, DashboardConfirmLayer);
+			Oxide.Game.Rust.Cui.CuiHelper.DestroyUi(player, DashboardLayer + ".Background");
+			Oxide.Game.Rust.Cui.CuiHelper.DestroyUi(player, DashboardConfirmLayer);
 		}
 
 		private ConfirmData GetOrAddConfirmData(BasePlayer player)
@@ -2688,7 +2684,7 @@ namespace Oxide.Plugins
 			bool ignoreCheck = false,
 			Func<string, int, bool> onResponse = null)
 		{
-			_coroutines.Add(Rust.Global.Runner.StartCoroutine(WebRequestAsync(endpoint,
+			_coroutines.Add(GetRunner().StartCoroutine(WebRequestAsync(endpoint,
 				body,
 				_config.API.Headers,
 				(response, code, err) =>
@@ -2719,7 +2715,7 @@ namespace Oxide.Plugins
 			Action<int, string> callback,
 			RequestMethod method = RequestMethod.GET)
 		{
-			_coroutines.Add(Rust.Global.Runner.StartCoroutine(WebRequestAsync(endpoint,
+			_coroutines.Add(GetRunner().StartCoroutine(WebRequestAsync(endpoint,
 				body,
 				_config.API.Headers,
 				(response, code, err) =>
@@ -2760,7 +2756,7 @@ namespace Oxide.Plugins
 			Action<T> callback = null,
 			RequestMethod method = RequestMethod.GET)
 		{
-			_coroutines.Add(Rust.Global.Runner.StartCoroutine(WebRequestAsync(url,
+			_coroutines.Add(GetRunner().StartCoroutine(WebRequestAsync(url,
 				body,
 				_config.API.Headers,
 				(result, code, err) =>
@@ -3185,7 +3181,7 @@ namespace Oxide.Plugins
 			
 #if RUST
 			var expiry = ban.EndsOn.HasValue
-				? Convert.ToInt64(ban.EndsOn.Value.ToUniversalTime().Subtract(DateTime.UtcNow).TotalSeconds) + Epoch.Current
+				? Convert.ToInt64(ban.EndsOn.Value.ToUniversalTime().Subtract(DateTime.UtcNow).TotalSeconds) + Facepunch.Math.Epoch.Current
 				: -1L;
 
 			var userID = Convert.ToUInt64(playerID);
@@ -3221,11 +3217,13 @@ namespace Oxide.Plugins
 			}
 		}
 
+#if RUST
 		private static void BanPlayer(ulong userID, string displayName, string banReason, long expiry)
 		{
 			ServerUsers.Set(userID, ServerUsers.UserGroup.Banned, displayName, banReason, expiry);
 			ServerUsers.Save();
 		}
+#endif
 
 		private bool UnBanGameBan(string playerID)
 		{
@@ -3441,7 +3439,7 @@ namespace Oxide.Plugins
 
 		private void SendExecutedRewards()
 		{
-			_coroutines.Add(Rust.Global.Runner.StartCoroutine(AsyncExecutedRewards()));
+			_coroutines.Add(GetRunner().StartCoroutine(AsyncExecutedRewards()));
 		}
 
 		private IEnumerator AsyncExecutedRewards()
@@ -3456,7 +3454,11 @@ namespace Oxide.Plugins
 					SaveExecutedRewards();
 				});
 
+#if RUST
 				yield return CoroutineEx.waitForFixedUpdate;
+#else
+				yield return new WaitForFixedUpdate();
+#endif
 			}
 		}
 
@@ -3515,11 +3517,57 @@ namespace Oxide.Plugins
 			{
 				var coroutine = _coroutines[0];
 				if (coroutine != null) 
-					Rust.Global.Runner.StopCoroutine(coroutine);
+					GetRunner().StopCoroutine(coroutine);
 				
 				_coroutines.RemoveAt(0);
 			}
 		}
+
+		#region Web Functions
+
+		private MonoBehaviour GetRunner()
+		{
+#if RUST
+			return Rust.Global.Runner;
+#else
+			return _webEngine;
+#endif
+		}
+		
+#if !RUST
+		private WebEngine _webEngine;
+		
+		private void InitWebEngine()
+		{
+			_webEngine = new GameObject().AddComponent<WebEngine>();
+		}
+
+		private void DestroyWebEngine()
+		{
+			if (_webEngine != null) 
+				_webEngine.Kill();
+		}
+		
+		private class WebEngine : MonoBehaviour
+		{
+			#region Destroy
+
+			public void Kill()
+			{
+				DestroyImmediate(this);
+			}
+
+			private void OnDestroy()
+			{
+				Destroy(gameObject);
+				Destroy(this);
+			}
+
+			#endregion
+		}	
+#endif
+
+		#endregion
 		
 		#endregion
 
