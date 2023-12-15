@@ -1,7 +1,8 @@
 ﻿// #define TESTING
 
 #if TESTING
-     #define RUST
+     // #define RUST
+     // #define SEVENDAYSTODIE
 #endif
 
 using System;
@@ -21,7 +22,7 @@ using System.Linq;
 
 namespace Oxide.Plugins
 {
-	[Info("VyHub", "VyHub", "1.3.10")]
+	[Info("VyHub", "VyHub", "1.3.11")]
 	[Description(
 		"VyHub plugin to manage and monetize your Rust / 7 Days to Die server. You can create your webstore for free with VyHub!")]
 	public class VyHub : CovalencePlugin
@@ -214,6 +215,10 @@ namespace Oxide.Plugins
 			LoadExecutedRewards();
 
 			LoadCachedBans();
+			
+#if SEVENDAYSTODIE
+			LoadCrossIDs();
+#endif
 		}
 
 		private void OnServerInitialized()
@@ -245,12 +250,11 @@ namespace Oxide.Plugins
 
 		private void Unload()
 		{
+			StopCoroutines();
+			
 #if RUST
 			UnloadDashboardUIs();
-#else
-			DestroyWebEngine();
 #endif
-			StopCoroutines();
 			
 			DisposeActiveRequests();
 
@@ -261,6 +265,14 @@ namespace Oxide.Plugins
 			StopAdverts();
 
 			SaveCachedBans();
+	
+#if !RUST
+			DestroyWebEngine();
+#endif
+			
+#if SEVENDAYSTODIE
+			SaveCrossIDs();
+#endif
 
 			_config = null;
 		}
@@ -275,6 +287,10 @@ namespace Oxide.Plugins
 			if (string.IsNullOrEmpty(playerID)) return;
 			
 			TryAddToPlayTimes(playerID);
+
+#if SEVENDAYSTODIE
+			TryToUpdateCrossID(playerID);
+#endif
 			
 			GetOrCreateUser(playerID, user =>
 			{
@@ -335,6 +351,26 @@ namespace Oxide.Plugins
 			{
 				"DEATH"
 			}, player.UserIDString);
+		}
+#endif
+
+#if SEVENDAYSTODIE
+		private void OnEntityDeath(EntityPlayer player, DamageResponse response)
+		{
+			if (player == null) return;
+			
+			var playerDataFromEntityID = global::GameManager.Instance.persistentPlayers.GetPlayerDataFromEntityID(player.entityId);
+			if (playerDataFromEntityID == null) return;
+
+			var userID = playerDataFromEntityID.PlatformUserIdentifier.ToString();
+			if (string.IsNullOrEmpty(userID)) return;
+
+			userID = userID.Replace("Steam_", string.Empty);
+
+			ExecuteReward(new List<string>
+			{
+				"DEATH"
+			}, userID);
 		}
 #endif
 
@@ -2863,7 +2899,7 @@ namespace Oxide.Plugins
 		#endregion
 
 		#region Utils
-
+		
 		#region Players
 
 		private void LoadPlayers()
@@ -2992,14 +3028,33 @@ namespace Oxide.Plugins
 
 		private void ShowAdvert(Advert advert)
 		{
+#if SEVENDAYSTODIE
+			var prefix = $"[0000FF]{_config.AdvertSettings.Prefix}";
+#else
 			var prefix = $"<color=blue>{_config.AdvertSettings.Prefix}</color>";
-
+#endif
+			
 			var color = advert.Color;
 			if (string.IsNullOrEmpty(color))
+			{
+#if SEVENDAYSTODIE
+				color = "FFFFFF";
+#else
 				color = "white";
-
+#endif
+			}
+			else
+			{
+#if SEVENDAYSTODIE
+				color = color.Trim('#');
+#endif
+			}
+			
+#if SEVENDAYSTODIE
+			var message = $"{prefix}[{color}]{advert.Content}";
+#else
 			var message = $"{prefix}<color={color}>{advert.Content}</color>";
-
+#endif
 			server.Broadcast(message);
 		}
 
@@ -3159,13 +3214,24 @@ namespace Oxide.Plugins
 #if RUST
 			return ServerUsers.GetAll(ServerUsers.UserGroup.Banned).Select(user => user.steamid.ToString()).ToList();
 #else
-			var list = new List<string>();
+			
+			var list = new HashSet<string>();
 			
 			foreach (var player in covalence.Players.All)
-				if (player.IsBanned)
+			{
+				ulong steamID;
+				if (server.IsBanned(player.Id)
+#if SEVENDAYSTODIE
+				    || IsSteamID(player.Id, out steamID) && IsBannedSteamPlayer(steamID)
+
+#endif
+				   )
+				{
 					list.Add(player.Id);
-			
-			return list;
+				}
+			}
+
+			return list.ToList();
 #endif
 		}
 
@@ -3201,11 +3267,19 @@ namespace Oxide.Plugins
 				BanPlayer(userID, banReason, "Unknown", expiry);
 			}
 #else
+			
+#if SEVENDAYSTODIE
+			BanPlayer(playerID, banReason, ban.EndsOn.HasValue
+				? ban.EndsOn.Value : DateTime.Now.AddYears(10));
+#else
+
 			var duration = ban.EndsOn.HasValue
 				? ban.EndsOn.Value.ToUniversalTime().Subtract(DateTime.UtcNow)
 				: default(TimeSpan);
-			
+
 			server.Ban(playerID, banReason, duration);
+#endif
+			
 #endif
 
 			if (_config.NotifyChatOnUserBlocked)
@@ -3218,15 +3292,68 @@ namespace Oxide.Plugins
 		}
 
 #if RUST
-		private static void BanPlayer(ulong userID, string displayName, string banReason, long expiry)
+		private void BanPlayer(ulong userID, string displayName, string banReason, long expiry)
 		{
 			ServerUsers.Set(userID, ServerUsers.UserGroup.Banned, displayName, banReason, expiry);
 			ServerUsers.Save();
 		}
 #endif
 
+#if SEVENDAYSTODIE
+		private void BanPlayer(string userID, string reason, DateTime dateTime)
+		{
+			var identifier = PlatformUserIdentifierAbs.FromPlatformAndId("Steam", userID);
+			if (identifier == null) return;
+			
+			KickPlayer(identifier, reason, dateTime);
+
+			GameManager.Instance.adminTools.Blacklist.AddBan(identifier.PlatformIdentifierString, identifier, dateTime, reason);
+		}
+
+		private void KickPlayer(PlatformUserIdentifierAbs identifier, string reason, DateTime dateTime)
+		{
+			var forNameOrId = SingletonMonoBehaviour<ConnectionManager>.Instance.Clients.ForUserId(identifier);
+			if (forNameOrId != null)
+			{
+				var kickData = new GameUtils.KickPlayerData(GameUtils.EKickReason.Banned, 0, dateTime, reason);
+				GameUtils.KickPlayerForClientInfo(forNameOrId, kickData);
+			}
+		}
+
+		private bool IsBannedSteamPlayer(ulong steamID)
+		{
+			string crossID;
+			if (!TryGetCrossID(steamID, out crossID))
+				return false;
+
+			return IsBannedPlayer(crossID);
+		}
+		
+		private bool IsBannedPlayer(string crossID)
+		{
+			foreach (var bannedUser in GameManager.Instance.adminTools.Blacklist.GetBanned())
+			{
+				if (bannedUser.UserIdentifier.CombinedString.Equals(crossID))
+				{
+					return true;
+				}
+			}
+
+			return false;
+		}
+#endif
+		
 		private bool UnBanGameBan(string playerID)
 		{
+#if SEVENDAYSTODIE 
+			// Check if unbanned already
+            if (server.IsBanned(playerID))
+            {
+                // Set to unbanned
+                GameManager.Instance.adminTools.Blacklist.RemoveBan(PlatformUserIdentifierAbs.FromPlatformAndId("Steam", playerID));
+            }
+#endif
+			
 			server.Unban(playerID);
 			return true;
 		}
@@ -3247,16 +3374,59 @@ namespace Oxide.Plugins
 			
 			banReason = serverUser.notes;
 #else
+
+#if SEVENDAYSTODIE
+			DateTime bannedUntil;
+			if (!TryGetBanInfo(playerID, out bannedUntil, out banReason))
+				return false;
+			
+			expiry = (long) Math.Round(bannedUntil.ToUniversalTime().Subtract(DateTime.UtcNow).TotalSeconds, 2);
+#else
 			expiry = (long) player.BanTimeRemaining.TotalSeconds;
 			
 			banReason = string.Empty;
 #endif
-			
-			CreateVyHubBanWithoutCreator(expiry > 0 ? expiry : (long?) null, banReason, playerID,
-				DateTime.UtcNow, callback);
+
+#endif
+
+			CreateVyHubBanWithoutCreator(expiry > 0 ? expiry : (long?) null, banReason, playerID, DateTime.UtcNow, callback);
 			return true;
 		}
 
+#if SEVENDAYSTODIE
+		private bool TryGetBanInfo(string playerID, out DateTime bannedUntil, out string banReason)
+		{
+			bannedUntil = DateTime.UtcNow;
+			banReason = string.Empty;
+			
+			var identifier = PlatformUserIdentifierAbs.FromPlatformAndId("Steam", playerID);
+			if (identifier != null)
+			{
+				if (GameManager.Instance.adminTools.Blacklist.IsBanned(identifier, out bannedUntil, out banReason))
+				{
+					return true;
+				}
+			}
+
+			ulong steamID;
+			string crossID;
+			if (IsSteamID(playerID, out steamID) &&
+			    TryGetCrossID(steamID, out crossID))
+			{
+				identifier = PlatformUserIdentifierAbs.FromPlatformAndId("EOS", crossID.Replace("EOS_", string.Empty));
+				if (identifier != null)
+				{
+					if (GameManager.Instance.adminTools.Blacklist.IsBanned(identifier, out bannedUntil, out banReason))
+					{
+						return true;
+					}
+				}
+			}
+
+			return false;
+		}
+#endif
+		
 		#endregion
 
 		#region Groups
@@ -3499,7 +3669,7 @@ namespace Oxide.Plugins
 		private void RegisterCommands()
 		{
 			AddCovalenceCommand(CMD_EDIT_CONFIG, nameof(CmdEditConfig));
-
+			
 			AddCovalenceCommand(CMD_SETUP_CONFIG, nameof(CmdSetupConfig));
 
 			AddCovalenceCommand(CMD_WARN, nameof(CmdWarn));
@@ -3569,6 +3739,73 @@ namespace Oxide.Plugins
 
 		#endregion
 		
+		#region Storage Cross ID
+		
+#if SEVENDAYSTODIE
+		private Dictionary<string, ulong> _userIdByCrossId = new Dictionary<string, ulong>();
+
+		private void LoadCrossIDs()
+		{
+			try
+			{
+				_userIdByCrossId = Interface.Oxide.DataFileSystem.ReadObject<Dictionary<string, ulong>>($"{Name}/CrossIDs");
+			}
+			catch (Exception e)
+			{
+				PrintError(e.ToString());
+			}
+
+			if (_userIdByCrossId == null) _userIdByCrossId = new Dictionary<string, ulong>();
+		}
+
+		private void SaveCrossIDs()
+		{
+			SaveObjectToData("CrossIDs", _userIdByCrossId);
+		}
+
+		private bool TryToUpdateCrossID(string userID)
+		{
+			ulong steamID;
+			if (!IsSteamID(userID, out steamID)) 
+				return false;
+			
+			var identifier = PlatformUserIdentifierAbs.FromPlatformAndId("Steam", userID);
+			if (identifier == null) return false;
+			
+			var clientInfo = SingletonMonoBehaviour<ConnectionManager>.Instance.Clients.ForUserId(identifier);
+			if (clientInfo == null) return false;
+
+			var crossID = clientInfo.CrossplatformId.ToString();
+			if (string.IsNullOrEmpty(crossID)) return false;
+
+			_userIdByCrossId[crossID] = steamID;
+			return true;
+		}
+		
+		private bool TryGetCrossID(ulong steamID, out string crossID)
+		{
+			crossID = string.Empty;
+			foreach (var check in _userIdByCrossId)
+			{
+				if (check.Value == steamID)
+				{
+					crossID = check.Key;
+					return true;
+				}
+			}
+
+			return false;
+		}
+#endif
+		
+		#endregion 
+		
+		private bool IsSteamID(string steamID, out ulong steam)
+		{
+			steam = Convert.ToUInt64(steamID);
+			return steam > 76561197960265728UL;
+		}
+		
 		#endregion
 
 		#region Logs
@@ -3598,6 +3835,11 @@ namespace Oxide.Plugins
 		private static void SayDebug(string message)
 		{
 			Debug.Log($"[TESTING] {message}");
+		}
+
+		[Command("test.bans")]
+		private void CmdRunBans(IPlayer player, string command, string[] args){
+			FetchVyHubBans(bans => SyncBans());
 		}
 #endif
 
