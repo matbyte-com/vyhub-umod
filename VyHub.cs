@@ -355,23 +355,23 @@ namespace Oxide.Plugins
 #endif
 
 #if SEVENDAYSTODIE
-		private void OnEntityDeath(EntityPlayer player, DamageResponse response)
-		{
-			if (player == null) return;
-			
-			var playerDataFromEntityID = global::GameManager.Instance.persistentPlayers.GetPlayerDataFromEntityID(player.entityId);
-			if (playerDataFromEntityID == null) return;
-
-			var userID = playerDataFromEntityID.PlatformUserIdentifier.ToString();
-			if (string.IsNullOrEmpty(userID)) return;
-
-			userID = userID.Replace("Steam_", string.Empty);
-
-			ExecuteReward(new List<string>
-			{
-				"DEATH"
-			}, userID);
-		}
+	        private void OnEntityDeath(EntityPlayer player, DamageResponse response)
+	        {
+	            if (player == null) return;
+	
+	            var playerDataFromEntityID = global::GameManager.Instance.persistentPlayers.GetPlayerDataFromEntityID(player.entityId);
+	            if (playerDataFromEntityID == null) return;
+	
+	            var userID = playerDataFromEntityID.PrimaryId?.ReadablePlatformUserIdentifier;
+	            if (string.IsNullOrEmpty(userID)) return;
+	
+	            userID = userID.Replace("Steam_", string.Empty);
+	
+	            ExecuteReward(new List<string>
+	            {
+	                "DEATH"
+	            }, userID);
+	        }
 #endif
 
 		#endregion
